@@ -27,7 +27,7 @@ namespace TheTool
         //    siteSelectorPanel.LoadSites(siteNames);
         //}
 
-
+        //Browser handlers
         private void BtnBrowseProd_Click(object sender, EventArgs e)
         {
             string selected = OpenZipFile();
@@ -55,24 +55,26 @@ namespace TheTool
             if (!string.IsNullOrEmpty(selected))
                 txtDataAccessPath.Text = selected;
         }
-
+        
+        //.zip checker
         private string OpenZipFile()
         {
             using (OpenFileDialog dialog = new OpenFileDialog())
             {
                 dialog.Filter = "ZIP files (*.zip)|*.zip";
-                dialog.Title = "Select a Build ZIP File";
+                dialog.Title = "Select a Build .zip File";
                 dialog.Multiselect = false;
 
                 return dialog.ShowDialog() == DialogResult.OK ? dialog.FileName : string.Empty;
             }
         }
 
+        //
         private void BtnExecute_Click(object sender, EventArgs e)
         {
             if (string.IsNullOrWhiteSpace(txtProdPath.Text))
             {
-                MessageBox.Show("Please select the production build ZIP file.");
+                MessageBox.Show("Please select the production build .zip file.");
                 return;
             }
 
@@ -81,7 +83,7 @@ namespace TheTool
             string esubZip = txtESubPath.Text;
             string dataAccessZip = txtDataAccessPath.Text;
 
-            string tempDir = Path.Combine(Path.GetTempPath(), "TheToolTemp_" + Guid.NewGuid());
+            string tempDir = Path.Combine(Path.GetTempPath(), "TempDirectory_" + Guid.NewGuid());
             Directory.CreateDirectory(tempDir);
 
             string prodExtractPath = Path.Combine(tempDir, "Prod");
@@ -97,6 +99,19 @@ namespace TheTool
                 if (File.Exists(dataAccessZip)) ZipFile.ExtractToDirectory(dataAccessZip, dataAccessExtractPath);
 
                 var selectedSites = siteSelectorPanel.GetSelectedSites();
+
+                if (!selectedSites.Any())
+                {
+                    MessageBox.Show("No sites selected for update.");
+                    return;
+                }
+
+                using (var confirmForm = new ConfirmationForm(selectedSites))
+                {
+                    var result = confirmForm.ShowDialog();
+                    if (confirmForm.ShowDialog(this) == DialogResult.OK)
+                        return;
+                }
 
                 foreach (var (siteName, prod, eap, esub) in selectedSites)
                 {

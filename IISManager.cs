@@ -34,7 +34,7 @@ namespace TheTool
             }
             catch (Exception ex)
             {
-                // You can log or rethrow depending on your needs
+   
                 Console.WriteLine("Error reading IIS app pools: " + ex.Message);
             }
 
