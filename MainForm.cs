@@ -85,12 +85,12 @@ namespace TheTool
             }
             if (anyEAP && !IsZipAvailable(eapZip))
             {
-                MessageBox.Show("An EAP build is required based on your final selections.");
+                MessageBox.Show("A CaseInfoSearch build is required based on your final selections.");
                 return false;
             }
             if (anyESub && !IsZipAvailable(esubZip))
             {
-                MessageBox.Show("An eSub build is required based on your final selections.");
+                MessageBox.Show("An eSubpoena build is required based on your final selections.");
                 return false;
             }
             if ((anyEAP || anyESub) && !IsZipAvailable(dataAccessZip))
@@ -185,12 +185,12 @@ namespace TheTool
             }
             if (selections.Any(s => s.EAP) && string.IsNullOrWhiteSpace(eapZip))
             {
-                MessageBox.Show("EAP build (.zip) is required for selected sites.", "Validation Error");
+                MessageBox.Show("CaseInfoSearch build (.zip) is required for selected sites.", "Validation Error");
                 return false;
             }
             if (selections.Any(s => s.eSub) && string.IsNullOrWhiteSpace(esubZip))
             {
-                MessageBox.Show("eSub build (.zip) is required for selected sites.", "Validation Error");
+                MessageBox.Show("eSubpoena build (.zip) is required for selected sites.", "Validation Error");
                 return false;
             }
             if ((selections.Any(s => s.EAP || s.eSub)) && string.IsNullOrWhiteSpace(dataAccessZip))
