@@ -53,6 +53,25 @@ namespace TheTool
             btnUnlock.Text = isNowEditable ? "Lock" : "Edit";
         }
 
+        //second validation based on edited user input
+        public List<(string SiteName, bool Prod, bool EAP, bool eSub)> GetUpdatedSelections()
+        {
+            var updatedSelections = new List<(string SiteName, bool Prod, bool EAP, bool eSub)>();
+
+            foreach (DataGridViewRow row in dgvSummary.Rows)
+            {
+                string siteName = row.Cells["colSiteName"].Value?.ToString() ?? string.Empty;
+                bool prod = Convert.ToBoolean(row.Cells["colProd"].Value ?? false);
+                bool eap = Convert.ToBoolean(row.Cells["colEAP"].Value ?? false);
+                bool esub = Convert.ToBoolean(row.Cells["colESub"].Value ?? false);
+
+                updatedSelections.Add((siteName, prod, eap, esub));
+            }
+
+            return updatedSelections;
+        }
+
+
 
     }
 }

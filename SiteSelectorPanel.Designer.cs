@@ -64,6 +64,8 @@
             dgvSites.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             dgvSites.Size = new Size(806, 656);
             dgvSites.TabIndex = 0;
+            dgvSites.CellValueChanged += dgvSites_CellValueChanged;
+            dgvSites.CurrentCellDirtyStateChanged += dgvSites_CurrentCellDirtyStateChanged;
             // 
             // colSelected
             // 
@@ -71,6 +73,7 @@
             colSelected.HeaderText = "";
             colSelected.MinimumWidth = 8;
             colSelected.Name = "colSelected";
+            colSelected.ReadOnly = true;
             // 
             // colSiteName
             // 

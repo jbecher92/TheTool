@@ -16,7 +16,7 @@
         private TextBox txtESubPath;
         private Button btnBrowseESub;
         private Button btnExecute;
-        private Button btnDummy;
+        //private Button btnDummy;
 
         private void InitializeComponent()
         {
@@ -34,7 +34,8 @@
             txtESubPath = new TextBox();
             btnBrowseESub = new Button();
             btnExecute = new Button();
-            btnDummy = new Button();
+            siteSelectorPanel.ZipValidationFunc = IsZipAvailable;
+            //btnDummy = new Button();
             SuspendLayout();
             // 
             // siteSelectorPanel
@@ -156,11 +157,11 @@
             // 
             // btnDummy
             // 
-            btnDummy.Location = new Point(633, 910);
-            btnDummy.Name = "btnDummy";
-            btnDummy.Size = new Size(91, 34);
-            btnDummy.TabIndex = 13;
-            btnDummy.Text = "Select All";
+            //btnDummy.Location = new Point(633, 910);
+            //btnDummy.Name = "btnDummy";
+            //btnDummy.Size = new Size(91, 34);
+            //btnDummy.TabIndex = 13;
+            //btnDummy.Text = "Select All";
             // 
             // MainForm
             // 
@@ -181,11 +182,13 @@
             Controls.Add(txtESubPath);
             Controls.Add(btnBrowseESub);
             Controls.Add(btnExecute);
-            Controls.Add(btnDummy);
+            //Controls.Add(btnDummy);
             Name = "MainForm";
             Text = "LL TOOL J";
             ResumeLayout(false);
             PerformLayout();
         }
+
+
     }
 }

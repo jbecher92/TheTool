@@ -98,9 +98,6 @@
             this.MinimumSize = new System.Drawing.Size(600, 400);
             this.Name = "ConfirmationForm";
             this.Text = "Confirm Selected Sites";
-            this.colProd.DefaultCellStyle.BackColor = System.Drawing.Color.LightGray;
-            this.colEAP.DefaultCellStyle.BackColor = System.Drawing.Color.LightGray;
-            this.colESub.DefaultCellStyle.BackColor = System.Drawing.Color.LightGray;
             ((System.ComponentModel.ISupportInitialize)(this.dgvSummary)).EndInit();
             this.ResumeLayout(false);
         }
