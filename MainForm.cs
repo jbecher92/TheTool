@@ -22,8 +22,8 @@ namespace TheTool
             siteSelectorPanel.LoadSites(dummySites);
         }
 
-        private void LoadAppPoolsIntoPanel() 
-        { 
+        private void LoadAppPoolsIntoPanel()
+        {
 
         }
         private void BtnBrowseProd_Click(object sender, EventArgs e)
@@ -171,7 +171,7 @@ namespace TheTool
             }
             finally
             {
-                try { Directory.Delete(tempDir, true); } catch { /* ignore */ }
+                try { Directory.Delete(tempDir, true); } catch { }
             }
         }
 
@@ -201,7 +201,21 @@ namespace TheTool
             return true;
         }
 
+        //Create Site Button Handler
+        private void BtnSiteCreator_Click(object sender, EventArgs e)
+        {
+            using (var form = new SiteCreatorForm())
+            {
+                form.ShowDialog(this);
+            }
+        }
 
+        private void btnSiteCreator_Click_1(object sender, EventArgs e)
+        {
+            var creatorForm = new SiteCreatorForm();
+            creatorForm.ShowDialog();
+        }
 
+       
     }
 }

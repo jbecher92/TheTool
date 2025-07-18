@@ -110,6 +110,6 @@ namespace TheTool
             }
         }
 
-        public Func<string, bool> ZipValidationFunc { get; set; }
+        public Func<string, bool> ZipValidationFunc { get; set; } = _ => true;
     }
 }

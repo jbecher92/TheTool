@@ -7,7 +7,7 @@ namespace TheTool
     public partial class ConfirmationForm : Form
     {
         public bool Confirmed { get; private set; } = false;
-
+              
         public ConfirmationForm(List<(string SiteName, bool Prod, bool EAP, bool eSub)> selectedSites)
         {
             InitializeComponent();

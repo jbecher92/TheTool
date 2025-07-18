@@ -16,6 +16,7 @@
         private TextBox txtESubPath;
         private Button btnBrowseESub;
         private Button btnExecute;
+        private Button btnSiteCreator;
         //private Button btnDummy;
 
         private void InitializeComponent()
@@ -34,17 +35,18 @@
             txtESubPath = new TextBox();
             btnBrowseESub = new Button();
             btnExecute = new Button();
-            siteSelectorPanel.ZipValidationFunc = IsZipAvailable;
-            //btnDummy = new Button();
+            btnSiteCreator = new Button();
             SuspendLayout();
             // 
             // siteSelectorPanel
             // 
-            siteSelectorPanel.Location = new Point(12, 187);
+            siteSelectorPanel.Location = new Point(12, 195);
             siteSelectorPanel.MinimumSize = new Size(600, 400);
             siteSelectorPanel.Name = "siteSelectorPanel";
             siteSelectorPanel.Size = new Size(809, 690);
             siteSelectorPanel.TabIndex = 0;
+            siteSelectorPanel.ZipValidationFunc = null;
+            
             // 
             // lblProdPath
             // 
@@ -155,13 +157,14 @@
             btnExecute.Text = "Update";
             btnExecute.Click += BtnExecute_Click;
             // 
-            // btnDummy
+            // btnSiteCreator
             // 
-            //btnDummy.Location = new Point(633, 910);
-            //btnDummy.Name = "btnDummy";
-            //btnDummy.Size = new Size(91, 34);
-            //btnDummy.TabIndex = 13;
-            //btnDummy.Text = "Select All";
+            btnSiteCreator.Location = new Point(12, 910);
+            btnSiteCreator.Name = "btnSiteCreator";
+            btnSiteCreator.Size = new Size(91, 34);
+            btnSiteCreator.TabIndex = 13;
+            btnSiteCreator.Text = "Create";
+            btnSiteCreator.Click += btnSiteCreator_Click_1;
             // 
             // MainForm
             // 
@@ -182,7 +185,7 @@
             Controls.Add(txtESubPath);
             Controls.Add(btnBrowseESub);
             Controls.Add(btnExecute);
-            //Controls.Add(btnDummy);
+            Controls.Add(btnSiteCreator);
             Name = "MainForm";
             Text = "LL TOOL J";
             ResumeLayout(false);

@@ -2,7 +2,7 @@
 {
     partial class ConfirmationForm
     {
-        private System.ComponentModel.IContainer components = null;
+       // private System.ComponentModel.IContainer components = null;
         private System.Windows.Forms.DataGridView dgvSummary;
         private System.Windows.Forms.Button btnConfirm;
         private System.Windows.Forms.Button btnCancel;

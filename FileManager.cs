@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -37,6 +38,26 @@ namespace TheTool
             CreateZipArchive(targetDir, archivePath);
             CleanDirectoryExceptConfig(targetDir);
             CopyNewBuildFiles(newBuildSourceDir, targetDir);
+        }
+
+        public static void CreateSiteDirectory(string path)
+        {
+            if (!Directory.Exists(path))
+            {
+                Directory.CreateDirectory(path);
+            }
+            else
+            {
+                throw new IOException($"Directory already exists: {path}");
+            }
+        }
+
+        public static void LaunchExplorer(string path)
+        {
+            if (Directory.Exists(path))
+            {
+                Process.Start("explorer.exe", path);
+            }
         }
 
         private static void CreateZipArchive(string sourceDir, string zipPath)
