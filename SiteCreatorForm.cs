@@ -126,12 +126,12 @@ namespace TheTool
                     status.Add($"✗ {ex.Message}");
                 }
             }
+            //Opens file explorer windows for created directories
+            //if (openedProd)
+            //    FileManager.LaunchExplorer(productionSiteRoot);
 
-            if (openedProd)
-                FileManager.LaunchExplorer(productionSiteRoot);
-
-            if (openedExternal)
-                FileManager.LaunchExplorer(Path.Combine(externalRoot, fullClientName));
+            //if (openedExternal)
+            //    FileManager.LaunchExplorer(Path.Combine(externalRoot, fullClientName));
 
             txtPreview.Text = string.Join(Environment.NewLine, status);
         }
