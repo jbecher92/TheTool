@@ -8,32 +8,33 @@ namespace TheTool
     {
         public bool Confirmed { get; private set; } = false;
 
-    
         public SiteCreationConfirmationForm(List<(string Label, string Path)> sitesToCreate)
         {
             InitializeComponent();
             PopulateGrid(sitesToCreate);
         }
 
-        private void PopulateGrid(List<(string Label, string Path)> entries)
+        private void PopulateGrid(IEnumerable<(string Label, string Path)> entries)
         {
             dgvPreview.Rows.Clear();
             foreach (var (label, path) in entries)
+            {
                 dgvPreview.Rows.Add(label, path);
+            }
         }
 
         private void btnConfirm_Click(object sender, EventArgs e)
         {
             Confirmed = true;
-            DialogResult = DialogResult.OK;
-            Close();
+            this.DialogResult = DialogResult.OK;
+            this.Close();
         }
 
         private void btnCancel_Click(object sender, EventArgs e)
         {
             Confirmed = false;
-            DialogResult = DialogResult.Cancel;
-            Close();
+            this.DialogResult = DialogResult.Cancel;
+            this.Close();
         }
     }
 }

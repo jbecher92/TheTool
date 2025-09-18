@@ -73,7 +73,7 @@
             colSelected.HeaderText = "";
             colSelected.MinimumWidth = 8;
             colSelected.Name = "colSelected";
-            colSelected.ReadOnly = true;
+            colSelected.ReadOnly = false;
             // 
             // colSiteName
             // 
@@ -81,7 +81,7 @@
             colSiteName.HeaderText = "Site Name";
             colSiteName.MinimumWidth = 8;
             colSiteName.Name = "colSiteName";
-            colSiteName.ReadOnly = true;
+            colSiteName.ReadOnly = false;
             // 
             // colProd
             // 

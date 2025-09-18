@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
@@ -9,153 +8,124 @@ namespace TheTool
 {
     public partial class SiteCreatorForm : Form
     {
-        private const string ExternalFolderFallback = "PbkExternal";
-
         public SiteCreatorForm()
         {
             InitializeComponent();
-            txtState.Leave += txtState_Leave;
-            txtClient.TextChanged += UpdatePreview;
-            chkProduction.CheckedChanged += UpdatePreview;
-            chkCaseInfoSearch.CheckedChanged += UpdatePreview;
-            chkESubpoena.CheckedChanged += UpdatePreview;
-            chkDataAccess.CheckedChanged += UpdatePreview;
+
+            // Live validation/preview hooks
+            txtState.Leave += (_, __) => ValidateInputs(updateUiOnly: true);
+            txtClient.TextChanged += (_, __) => ValidateInputs(updateUiOnly: true);
+            chkProduction.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
+            chkCaseInfoSearch.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
+            chkESubpoena.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
+
+            ValidateInputs(updateUiOnly: true);
         }
 
-        private void txtState_Leave(object? sender, EventArgs e)
-        {
-            ValidateState();
-        }
-
-        private void ValidateState()
-        {
-            string state = txtState.Text.Trim().ToUpper();
-            bool isValid = StateHash.ValidStates.Contains(state);
-
-            picStateValidation.Image = isValid
-                ? SystemIcons.Information.ToBitmap()
-                : SystemIcons.Error.ToBitmap();
-
-            btnCreate.Enabled = isValid && HasCheckedRoles();
-        }
-
-        private bool HasCheckedRoles() =>
-            chkProduction.Checked || chkCaseInfoSearch.Checked || chkESubpoena.Checked || chkDataAccess.Checked;
-
-        private void UpdatePreview(object? sender, EventArgs e)
-        {
-            string state = txtState.Text.Trim().ToUpper();
-            string rawClient = txtClient.Text.Trim();
-            string client = CapitalizeFirst(rawClient);
-
-            if (!StateHash.ValidStates.Contains(state) || string.IsNullOrWhiteSpace(client))
-            {
-                txtPreview.Text = string.Empty;
-                btnCreate.Enabled = false;
-                return;
-            }
-
-            btnCreate.Enabled = HasCheckedRoles();
-
-            string fullClientName = state + client;
-            string basePath = Path.Combine("C:\\inetpub\\wwwroot", state);
-            string siteRoot = Path.Combine(basePath, fullClientName);
-            string externalRoot = ResolveOrCreateExternalPath(basePath);
-
-            List<string> preview = new();
-
-            if (chkProduction.Checked)
-                preview.Add($"{fullClientName} -> {siteRoot}");
-
-            if (chkCaseInfoSearch.Checked)
-                preview.Add($"{fullClientName}CaseInfoSearch -> {Path.Combine(externalRoot, fullClientName, "CaseInfoSearch")}");
-
-            if (chkESubpoena.Checked)
-                preview.Add($"{fullClientName}eSubpoena -> {Path.Combine(externalRoot, fullClientName, "eSubpoena")}");
-
-            if (chkDataAccess.Checked)
-                preview.Add($"{fullClientName}DataAccess -> {Path.Combine(externalRoot, fullClientName, "DataAccess")}");
-
-            txtPreview.Text = string.Join(Environment.NewLine, preview);
-        }
+        // === Public read-only outputs for MainForm ===
+        public string State => (txtState.Text ?? "").Trim().ToUpperInvariant();
+        public string Client => (txtClient.Text ?? "").Trim();
+        public bool CreateProd => chkProduction.Checked;
+        public bool CreateEAP => chkCaseInfoSearch.Checked;
+        public bool CreateESub => chkESubpoena.Checked;
 
         private void btnCreate_Click(object sender, EventArgs e)
         {
-            string state = txtState.Text.Trim().ToUpper();
-            string rawClient = txtClient.Text.Trim();
-            string client = CapitalizeFirst(rawClient);
-            string fullClientName = state + client;
-
-            string basePath = Path.Combine("C:\\inetpub\\wwwroot", state);
-            string productionSiteRoot = Path.Combine(basePath, fullClientName);
-            string externalRoot = ResolveOrCreateExternalPath(basePath);
-
-            List<(string Label, string Path)> entries = new();
-
-            if (chkProduction.Checked)
-                entries.Add((fullClientName, productionSiteRoot));
-            if (chkCaseInfoSearch.Checked)
-                entries.Add(($"{fullClientName}CaseInfoSearch", Path.Combine(externalRoot, fullClientName, "CaseInfoSearch")));
-            if (chkESubpoena.Checked)
-                entries.Add(($"{fullClientName}eSubpoena", Path.Combine(externalRoot, fullClientName, "eSubpoena")));
-            if (chkDataAccess.Checked)
-                entries.Add(($"{fullClientName}DataAccess", Path.Combine(externalRoot, fullClientName, "DataAccess")));
-
-            using var confirm = new SiteCreationConfirmationForm(entries);
-            if (confirm.ShowDialog(this) != DialogResult.OK)
-                return;
-
-            bool openedExternal = false;
-            bool openedProd = false;
-            List<string> status = new();
-
-            foreach (var (label, path) in entries)
-            {
-                try
-                {
-                    FileManager.CreateSiteDirectory(path);
-                    status.Add($"✓ Created: {path}");
-
-                    if (label == fullClientName)
-                        openedProd = true;
-                    else
-                        openedExternal = true;
-                }
-                catch (IOException ex)
-                {
-                    status.Add($"✗ {ex.Message}");
-                }
-            }
-            //Opens file explorer windows for created directories
-            //if (openedProd)
-            //    FileManager.LaunchExplorer(productionSiteRoot);
-
-            //if (openedExternal)
-            //    FileManager.LaunchExplorer(Path.Combine(externalRoot, fullClientName));
-
-            txtPreview.Text = string.Join(Environment.NewLine, status);
+            if (!ValidateInputs(updateUiOnly: false)) return;
+            DialogResult = DialogResult.OK;
+            Close();
         }
 
-        private static string CapitalizeFirst(string input) =>
-            string.IsNullOrWhiteSpace(input)
-                ? input
-                : char.ToUpper(input[0]) + input.Substring(1).ToLower();
-
-        private static string ResolveOrCreateExternalPath(string basePath)
+        private void btnCancel_Click(object sender, EventArgs e)
         {
-            if (!Directory.Exists(basePath))
-                Directory.CreateDirectory(basePath);
-
-            string? existing = Directory.GetDirectories(basePath)
-                .FirstOrDefault(d => Path.GetFileName(d)
-                    .Contains("external", StringComparison.OrdinalIgnoreCase));
-
-            if (!string.IsNullOrEmpty(existing))
-                return existing;
-
-            string fallback = Path.Combine(basePath, ExternalFolderFallback);
-            Directory.CreateDirectory(fallback);
-            return fallback;
+            DialogResult = DialogResult.Cancel;
+            Close();
         }
+
+        private bool ValidateInputs(bool updateUiOnly)
+        {
+            bool stateOk = State.Length == 2
+                            && State.All(char.IsLetter)
+                            && StateHash.ValidStates.Contains(State);
+            bool clientOk = !string.IsNullOrWhiteSpace(Client);
+
+            // Require at least one real role; DA is implied by externals
+            bool anyRole = CreateProd || CreateEAP || CreateESub;
+
+            btnCreate.Enabled = stateOk && clientOk && anyRole;
+
+            try { txtPreview.Text = BuildPreviewText(); } catch { /* keep silent in preview */ }
+
+            if (!updateUiOnly)
+            {
+                if (!stateOk) MessageBox.Show("Enter a valid 2-letter US state (e.g., KS).", "Validation");
+                if (!clientOk) MessageBox.Show("Enter a client name.", "Validation");
+                if (!anyRole) MessageBox.Show("Select at least one site/app to create.", "Validation");
+            }
+
+            return stateOk && clientOk && anyRole;
+        }
+
+        private string BuildPreviewText()
+        {
+            // Preview only — no IO creation here.
+            string site = State + Client;
+
+            // Production preview target: …\{STATE}{CLIENT}\{tag}
+            string prodBase = FileManager.ResolveProdBasePath(State, Client);
+            string prodTarget = Path.Combine(prodBase, TodayTag());
+
+            // External client root: …\{STATE}\PbkExternal\{STATE}{CLIENT} (predicted safely)
+            string clientRoot = ResolveExternalRootForPreview(State, Client);
+
+            var lines = new List<string>();
+
+            if (CreateProd)
+                lines.Add($"{site} → {prodTarget}");
+
+            if (CreateEAP)
+                lines.Add($"{site}CaseInfoSearch → {Path.Combine(clientRoot, "CaseInfoSearch")}");
+
+            if (CreateESub)
+                lines.Add($"{site}eSubpoena → {Path.Combine(clientRoot, "eSubpoena")}");
+
+            // DataAccess is implied if any external is selected
+            if (CreateEAP || CreateESub)
+            {
+                // Prefer PBKDataAccess if already present under the *existing* client root; otherwise show DataAccess.
+                // IMPORTANT: In preview we don't enumerate if the state folder doesn't exist yet.
+                string daFolder = Directory.Exists(Path.Combine(clientRoot, "PBKDataAccess"))
+                                  ? "PBKDataAccess"
+                                  : "DataAccess";
+                lines.Add($"{site}{daFolder} → {Path.Combine(clientRoot, daFolder)}");
+            }
+
+            return string.Join(Environment.NewLine, lines);
+        }
+
+        private static string ResolveExternalRootForPreview(string state, string client, string wwwrootBase = @"F:\inetpub\wwwroot")
+        {
+            // If state is invalid, just predict a normalized path — main form will reject on OK anyway.
+            if (string.IsNullOrWhiteSpace(state) || state.Length != 2 || !StateHash.ValidStates.Contains(state))
+                return Path.Combine(wwwrootBase, state, "PbkExternal", state + client);
+
+            string stateBase = Path.Combine(wwwrootBase, state);
+            string pbk = Path.Combine(stateBase, "PbkExternal");
+
+            // If {STATE} folder doesn't exist, don't enumerate — just predict PbkExternal\{STATE}{CLIENT}
+            if (!Directory.Exists(stateBase))
+                return Path.Combine(pbk, state + client);
+
+            // If it exists, we can safely check for an existing "*external*" variant; otherwise default to PbkExternal.
+            string externalBase = Directory.Exists(pbk)
+                ? pbk
+                : Directory.GetDirectories(stateBase, "*external*", SearchOption.TopDirectoryOnly)
+                           .FirstOrDefault() ?? pbk;
+
+            return Path.Combine(externalBase, state + client);
+        }
+
+        // Match MainForm’s tag format ("MMddyyyy")
+        private static string TodayTag() => DateTime.Now.ToString("MMddyyyy");
     }
 }

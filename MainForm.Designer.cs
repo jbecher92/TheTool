@@ -17,6 +17,7 @@
         private Button btnBrowseESub;
         private Button btnExecute;
         private Button btnSiteCreator;
+
         //private Button btnDummy;
 
         private void InitializeComponent()
@@ -36,6 +37,7 @@
             btnBrowseESub = new Button();
             btnExecute = new Button();
             btnSiteCreator = new Button();
+
             SuspendLayout();
             // 
             // siteSelectorPanel
@@ -46,7 +48,7 @@
             siteSelectorPanel.Size = new Size(809, 690);
             siteSelectorPanel.TabIndex = 0;
             siteSelectorPanel.ZipValidationFunc = null;
-            
+           
             // 
             // lblProdPath
             // 

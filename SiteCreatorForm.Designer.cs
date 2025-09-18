@@ -10,7 +10,7 @@
         private System.Windows.Forms.CheckBox chkProduction;
         private System.Windows.Forms.CheckBox chkCaseInfoSearch;
         private System.Windows.Forms.CheckBox chkESubpoena;
-        private System.Windows.Forms.CheckBox chkDataAccess;
+        //private System.Windows.Forms.CheckBox chkDataAccess;
         private System.Windows.Forms.Button btnCreate;
         private System.Windows.Forms.TextBox txtPreview;
         private System.Windows.Forms.Label lblPreview;
@@ -25,7 +25,7 @@
             this.chkProduction = new System.Windows.Forms.CheckBox();
             this.chkCaseInfoSearch = new System.Windows.Forms.CheckBox();
             this.chkESubpoena = new System.Windows.Forms.CheckBox();
-            this.chkDataAccess = new System.Windows.Forms.CheckBox();
+            //this.chkDataAccess = new System.Windows.Forms.CheckBox();
             this.btnCreate = new System.Windows.Forms.Button();
             this.txtPreview = new System.Windows.Forms.TextBox();
             this.lblPreview = new System.Windows.Forms.Label();
@@ -44,7 +44,7 @@
             this.txtState.Location = new System.Drawing.Point(70, 12);
             this.txtState.Name = "txtState";
             this.txtState.Size = new System.Drawing.Size(50, 31);
-            this.txtState.TextChanged += new System.EventHandler(this.UpdatePreview);
+            this.txtState.TextChanged += (_, __) => ValidateInputs(updateUiOnly: true);
 
             // picStateValidation
             this.picStateValidation.Location = new System.Drawing.Point(130, 15);
@@ -64,35 +64,36 @@
             this.txtClient.Location = new System.Drawing.Point(230, 12);
             this.txtClient.Name = "txtClient";
             this.txtClient.Size = new System.Drawing.Size(332, 31);
-            this.txtClient.TextChanged += new System.EventHandler(this.UpdatePreview);
+            this.txtClient.TextChanged += (_, __) => ValidateInputs(updateUiOnly: true);
 
             // chkProduction
             this.chkProduction.Location = new System.Drawing.Point(12, 72);
             this.chkProduction.Name = "chkProduction";
             this.chkProduction.Size = new System.Drawing.Size(126, 30);
             this.chkProduction.Text = "Default Site";
-            this.chkProduction.CheckedChanged += new System.EventHandler(this.UpdatePreview);
+            this.chkProduction.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
 
             // chkCaseInfoSearch
             this.chkCaseInfoSearch.Location = new System.Drawing.Point(144, 72);
             this.chkCaseInfoSearch.Name = "chkCaseInfoSearch";
             this.chkCaseInfoSearch.Size = new System.Drawing.Size(160, 30);
             this.chkCaseInfoSearch.Text = "CaseInfoSearch";
-            this.chkCaseInfoSearch.CheckedChanged += new System.EventHandler(this.UpdatePreview);
+            this.chkCaseInfoSearch.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
 
             // chkESubpoena
             this.chkESubpoena.Location = new System.Drawing.Point(310, 72);
             this.chkESubpoena.Name = "chkESubpoena";
             this.chkESubpoena.Size = new System.Drawing.Size(130, 30);
             this.chkESubpoena.Text = "eSubpoena";
-            this.chkESubpoena.CheckedChanged += new System.EventHandler(this.UpdatePreview);
+            this.chkESubpoena.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
 
             // chkDataAccess
-            this.chkDataAccess.Location = new System.Drawing.Point(446, 72);
-            this.chkDataAccess.Name = "chkDataAccess";
-            this.chkDataAccess.Size = new System.Drawing.Size(140, 30);
-            this.chkDataAccess.Text = "DataAccess";
-            this.chkDataAccess.CheckedChanged += new System.EventHandler(this.UpdatePreview);
+            //this.chkDataAccess.Location = new System.Drawing.Point(446, 72);
+            //this.chkDataAccess.Name = "chkDataAccess";
+            //this.chkDataAccess.Size = new System.Drawing.Size(140, 30);
+            //this.chkDataAccess.Text = "DataAccess";
+            //this.chkDataAccess.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
+
 
             // btnCreate
             this.btnCreate.Location = new System.Drawing.Point(733, 412);
@@ -127,7 +128,7 @@
             this.Controls.Add(this.chkProduction);
             this.Controls.Add(this.chkCaseInfoSearch);
             this.Controls.Add(this.chkESubpoena);
-            this.Controls.Add(this.chkDataAccess);
+            //this.Controls.Add(this.chkDataAccess);
             this.Controls.Add(this.btnCreate);
             this.Controls.Add(this.lblPreview);
             this.Controls.Add(this.txtPreview);
