@@ -4,11 +4,6 @@
     {
         private System.Windows.Forms.TextBox txtFilter;
         private System.Windows.Forms.DataGridView dgvSites;
-        private System.Windows.Forms.DataGridViewCheckBoxColumn colSelected;
-        private System.Windows.Forms.DataGridViewTextBoxColumn colSiteName;
-        private System.Windows.Forms.DataGridViewCheckBoxColumn colProd;
-        private System.Windows.Forms.DataGridViewCheckBoxColumn colExt;
-        private System.Windows.Forms.DataGridViewCheckBoxColumn colOther;
 
         private void InitializeComponent()
         {
@@ -20,7 +15,7 @@
             colSiteName = new DataGridViewTextBoxColumn();
             colProd = new DataGridViewCheckBoxColumn();
             colExt = new DataGridViewCheckBoxColumn();
-            colOther = new DataGridViewCheckBoxColumn();
+            colESub = new DataGridViewCheckBoxColumn();
             ((System.ComponentModel.ISupportInitialize)dgvSites).BeginInit();
             SuspendLayout();
             // 
@@ -30,7 +25,7 @@
             txtFilter.Location = new Point(3, 3);
             txtFilter.Name = "txtFilter";
             txtFilter.PlaceholderText = "Enter letter number";
-            txtFilter.Size = new Size(491, 34);
+            txtFilter.Size = new Size(491, 30);
             txtFilter.TabIndex = 1;
             txtFilter.TextChanged += TxtFilter_TextChanged;
             // 
@@ -52,7 +47,7 @@
             dataGridViewCellStyle2.WrapMode = DataGridViewTriState.True;
             dgvSites.ColumnHeadersDefaultCellStyle = dataGridViewCellStyle2;
             dgvSites.ColumnHeadersHeight = 34;
-            dgvSites.Columns.AddRange(new DataGridViewColumn[] { colSelected, colSiteName, colProd, colExt, colOther });
+            dgvSites.Columns.AddRange(new DataGridViewColumn[] { colSelected, colSiteName, colProd, colExt, colESub });
             dgvSites.EnableHeadersVisualStyles = false;
             dgvSites.Font = new Font("Segoe UI", 10F);
             dgvSites.GridColor = Color.LightGray;
@@ -62,47 +57,48 @@
             dgvSites.RowHeadersVisible = false;
             dgvSites.RowHeadersWidth = 62;
             dgvSites.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-            dgvSites.Size = new Size(806, 656);
+            dgvSites.Size = new Size(641, 506);
             dgvSites.TabIndex = 0;
             dgvSites.CellValueChanged += dgvSites_CellValueChanged;
             dgvSites.CurrentCellDirtyStateChanged += dgvSites_CurrentCellDirtyStateChanged;
             // 
             // colSelected
             // 
-            colSelected.FillWeight = 10F;
+            colSelected.FillWeight = 20F;
             colSelected.HeaderText = "";
             colSelected.MinimumWidth = 8;
             colSelected.Name = "colSelected";
-            colSelected.ReadOnly = false;
             // 
             // colSiteName
             // 
-            colSiteName.FillWeight = 60F;
+            colSiteName.FillWeight = 150F;
             colSiteName.HeaderText = "Site Name";
             colSiteName.MinimumWidth = 8;
             colSiteName.Name = "colSiteName";
-            colSiteName.ReadOnly = false;
             // 
             // colProd
             // 
-            colProd.FillWeight = 10F;
+            colProd.FillWeight = 30F;
             colProd.HeaderText = "Prod";
             colProd.MinimumWidth = 8;
             colProd.Name = "colProd";
+            colProd.Resizable = DataGridViewTriState.False;
             // 
             // colExt
             // 
-            colExt.FillWeight = 10F;
+            colExt.FillWeight = 30F;
             colExt.HeaderText = "EAP";
             colExt.MinimumWidth = 8;
             colExt.Name = "colExt";
+            colExt.Resizable = DataGridViewTriState.False;
             // 
-            // colOther
+            // colESub
             // 
-            colOther.FillWeight = 10F;
-            colOther.HeaderText = "eSub";
-            colOther.MinimumWidth = 8;
-            colOther.Name = "colOther";
+            colESub.FillWeight = 30F;
+            colESub.HeaderText = "eSub";
+            colESub.MinimumWidth = 8;
+            colESub.Name = "colESub";
+            colESub.Resizable = DataGridViewTriState.False;
             // 
             // SiteSelectorPanel
             // 
@@ -110,10 +106,15 @@
             Controls.Add(dgvSites);
             MinimumSize = new Size(600, 400);
             Name = "SiteSelectorPanel";
-            Size = new Size(827, 738);
+            Size = new Size(647, 552);
             ((System.ComponentModel.ISupportInitialize)dgvSites).EndInit();
             ResumeLayout(false);
             PerformLayout();
         }
+        private DataGridViewCheckBoxColumn colSelected;
+        private DataGridViewTextBoxColumn colSiteName;
+        private DataGridViewCheckBoxColumn colProd;
+        private DataGridViewCheckBoxColumn colExt;
+        private DataGridViewCheckBoxColumn colESub;
     }
 }

@@ -10,24 +10,44 @@ namespace TheTool
     {
         public bool Confirmed { get; private set; } = false;
 
-        // Log UI
+        // Log UI (created programmatically so we don't touch your designer layout)
         private Panel pnlLog;
         private Label lblLogHeader;
         private TextBox txtLog;
 
-        // Build availability flags for later (to keep disabled even when "Edit" toggled)
-        //private bool _prodAvailable;
-        //private bool _eapAvailable;
-        //private bool _esubAvailable;
-        //private bool _dataAccessAvailable;
+        // === Cooperative abort state ===
+        private enum UpdatePhase { None, Prod, Externals }
+        private enum AbortMode
+        {
+            None,
+            // Abort clicked while in Prod for a client -> finish Prod, then skip this client's externals and all remaining clients
+            SkipExternalsAndRestAfterCurrentProd,
+            // Abort clicked while in Externals for a client -> finish all externals for this client, then skip remaining clients
+            SkipRestAfterCurrentExternals
+        }
+
+        private volatile bool _abortRequested;
+        private AbortMode _abortMode = AbortMode.None;
+        private UpdatePhase _currentPhase = UpdatePhase.None;
+        private string _currentSite = string.Empty;
 
         // Raised when the user presses Confirm and we should start the update.
         public event Action<List<(string SiteName, bool Prod, bool EAP, bool eSub)>>? RunConfirmed;
+
+        // Raised immediately when Abort is clicked (visibility controlled by SwitchToLogView)
+        public event Action? AbortRequested;
 
         public ConfirmationForm(List<(string SiteName, bool Prod, bool EAP, bool eSub)> selectedSites)
         {
             InitializeComponent();
             CreateLogControls();
+
+            // Ensure Abort is hidden until we flip to log mode
+            if (btnAbort != null)
+            {
+                btnAbort.Visible = false;
+                btnAbort.Enabled = true;
+            }
 
             foreach (var (site, prod, eap, esub) in selectedSites)
             {
@@ -68,13 +88,7 @@ namespace TheTool
             pnlLog.BringToFront();
         }
 
-        /// <summary>
-        /// Disable/enable checkbox columns based on which builds are available.
-        /// - If DataAccess is missing, both EAP and eSubpoena are disabled regardless of their own zips.
-        /// </summary>
-        
-
-        
+        // === Buttons ===
 
         private void btnConfirm_Click(object sender, EventArgs e)
         {
@@ -100,15 +114,34 @@ namespace TheTool
                 {
                     column.ReadOnly = !isNowEditable;
                     column.DefaultCellStyle.BackColor = column.ReadOnly
-                        ? System.Drawing.Color.LightGray
-                        : System.Drawing.Color.White;
+                        ? Color.LightGray
+                        : Color.White;
                 }
             }
 
             btnUnlock.Text = isNowEditable ? "Lock" : "Edit";
         }
 
-        //second validation based on edited user input
+        private void btnAbort_Click(object sender, EventArgs e)
+        {
+            // Visible only in log view
+            btnAbort.Enabled = false; // debounce
+            _abortRequested = true;
+
+            // Capture the intended abort mode based on where we are right now
+            _abortMode = _currentPhase switch
+            {
+                UpdatePhase.Prod => AbortMode.SkipExternalsAndRestAfterCurrentProd,
+                UpdatePhase.Externals => AbortMode.SkipRestAfterCurrentExternals,
+                _ => AbortMode.SkipExternalsAndRestAfterCurrentProd // default to earliest safe boundary
+            };
+
+            AppendLog("Abort Requested. Completing current update.");
+            AbortRequested?.Invoke();
+        }
+
+        // === Selections and summary grid ===
+
         public List<(string SiteName, bool Prod, bool EAP, bool eSub)> GetUpdatedSelections()
         {
             var list = new List<(string SiteName, bool Prod, bool EAP, bool eSub)>();
@@ -127,19 +160,29 @@ namespace TheTool
 
         public void SwitchToLogView(string header)
         {
-            // Hide the grid, show the log
+            // Hide the grid, show the log panel
             if (dgvSummary.Visible) dgvSummary.Visible = false;
 
             if (pnlLog != null)
             {
-                lblLogHeader.Text = header ?? "Update log";
+                lblLogHeader.Text = string.IsNullOrWhiteSpace(header) ? "Update log" : header;
                 pnlLog.Visible = true;
                 pnlLog.BringToFront();
             }
 
-            // Disable buttons except Cancel (rename to Close when done)
-            btnConfirm.Enabled = false;
-            btnUnlock.Enabled = false;
+            // Hide edit/confirm in log mode; show Abort
+            btnConfirm.Visible = false;
+            btnUnlock.Visible = false;
+
+            if (btnAbort != null)
+            {
+                btnAbort.Enabled = true;
+                btnAbort.Visible = true;
+                btnAbort.BringToFront();
+            }
+
+            this.AcceptButton = null;
+            txtLog?.Focus();
         }
 
         public void AppendLog(string line)
@@ -160,41 +203,80 @@ namespace TheTool
         public void MarkComplete(string footerMessage)
         {
             AppendLog(string.IsNullOrWhiteSpace(footerMessage) ? "Done." : footerMessage);
-            if (!IsDisposed)
+
+            if (IsDisposed) return;
+
+            void apply()
             {
-                if (InvokeRequired)
-                {
-                    try { BeginInvoke(new Action(() => btnCancel.Text = "Close")); } catch { }
-                }
-                else
-                {
-                    btnCancel.Text = "Close";
-                }
+                if (btnAbort != null) btnAbort.Visible = false;
+                btnCancel.Text = "Close";
+                btnCancel.Focus();
+            }
+
+            if (InvokeRequired)
+            {
+                try { BeginInvoke(new Action(apply)); } catch { }
+            }
+            else
+            {
+                apply();
             }
         }
 
-        private void DisableOrEnableColumn(string colName, bool enabled)
-        {
-            if (!dgvSummary.Columns.Contains(colName)) return;
+        // === Phase tracking + checkpoint helpers (used by your MainForm loop) ===
+        //
+        // Usage pattern in MainForm (pseudocode):
+        //
+        // confirmForm.EnterProdPhase(site);
+        // await DoProdAsync(site);
+        // if (confirmForm.ShouldSkipExternalsFor(site)) { break or continue-all-skip; }
+        //
+        // confirmForm.EnterExternalsPhase(site);
+        // await DoAllExternalsAsync(site); // EAP + eSub + DataAccess as applicable
+        // if (confirmForm.ShouldStopAfterExternals(site)) { break; }
 
-            var col = dgvSummary.Columns[colName];
-            col.ReadOnly = !enabled;
-            col.DefaultCellStyle.BackColor = enabled ? Color.White : Color.LightGray;
+        public void EnterProdPhase(string siteName)
+        {
+            _currentSite = siteName ?? string.Empty;
+            _currentPhase = UpdatePhase.Prod;
         }
 
-        private bool GetColumnEnabled(string colName)
+        public void EnterExternalsPhase(string siteName)
         {
-            if (!dgvSummary.Columns.Contains(colName)) return false;
-            return !dgvSummary.Columns[colName].ReadOnly;
+            _currentSite = siteName ?? string.Empty;
+            _currentPhase = UpdatePhase.Externals;
         }
 
-        private void ClearColumnChecks(string colName)
+        public void LeavePhase() // optional: call after finishing a phase
         {
-            foreach (DataGridViewRow row in dgvSummary.Rows)
-            {
-                if (row.Cells[colName] is DataGridViewCheckBoxCell cell)
-                    cell.Value = false;
-            }
+            _currentPhase = UpdatePhase.None;
         }
+
+        /// <summary>
+        /// True when Abort was requested during the Prod phase of this site.
+        /// Honor this immediately after finishing Prod: skip this site's externals and skip all remaining clients.
+        /// </summary>
+        public bool ShouldSkipExternalsFor(string siteName)
+        {
+            if (!_abortRequested) return false;
+            if (_abortMode != AbortMode.SkipExternalsAndRestAfterCurrentProd) return false;
+            return string.Equals(_currentSite, siteName ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// True when Abort was requested during the Externals phase of this site.
+        /// Honor this after finishing all externals for this client: skip all remaining clients.
+        /// </summary>
+        public bool ShouldStopAfterExternals(string siteName)
+        {
+            if (!_abortRequested) return false;
+            if (_abortMode != AbortMode.SkipRestAfterCurrentExternals) return false;
+            return string.Equals(_currentSite, siteName ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Exposes whether Abort was requested at all (useful for between-client boundary checks).
+        /// </summary>
+        public bool IsAbortRequested => _abortRequested;
     }
 }

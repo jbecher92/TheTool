@@ -259,8 +259,8 @@ namespace TheTool
                 }
             }
 
-            if (stoppedPools.Count > 0)
-                log?.Invoke($"App pools stopped: {string.Join(", ", stoppedPools)}");
+            if (stoppedPools?.Count > 0)
+                LogPoolsByClient(stoppedPools, log, "App pools stopped:");
 
             Exception? workError = null;
             try
@@ -287,10 +287,44 @@ namespace TheTool
                 }
             }
 
-            if (startedPools.Count > 0)
-                log?.Invoke($"App pools started: {string.Join(", ", startedPools)}");
+            if (startedPools?.Count > 0)
+                LogPoolsByClient(startedPools, log, "App pools started:");
 
             if (workError is not null) throw workError;
+        }
+
+        static string BaseClientKey(string pool)
+        {
+            // strip known suffixes to get the STATE+CLIENT base
+            string[] suffixes = { "CaseInfoSearch", "eSubpoena", "PBKDataAccess", "DataAccess" };
+            foreach (var suf in suffixes)
+                if (pool.EndsWith(suf, StringComparison.OrdinalIgnoreCase))
+                    return pool[..^suf.Length];
+            return pool; // Prod has no suffix
+        }
+
+        static string RoleForPool(string pool)
+        {
+            //if (pool.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)) return "CaseInfoSearch";
+            //if (pool.EndsWith("eSubpoena", StringComparison.OrdinalIgnoreCase)) return "eSubpoena";
+            //if (pool.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase) ||
+            //    pool.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase)) return "DataAccess";
+            return pool;
+        }
+
+        static void LogPoolsByClient(IEnumerable<string> pools, Action<string>? log, string header)
+        {
+            log?.Invoke(header);
+
+            foreach (var g in pools
+                .GroupBy(p => BaseClientKey(p), StringComparer.OrdinalIgnoreCase)
+                .OrderBy(g => g.Key))
+            {
+                var roles = g.Select(RoleForPool)
+                             .Distinct(StringComparer.OrdinalIgnoreCase)
+                             .OrderBy(r => r);
+                log?.Invoke($"  {string.Join(", ", roles)}");
+            }
         }
     }
 }

@@ -1,21 +1,29 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Windows.Forms;
 using System.IO;
+using System.Linq;
+using System.Windows.Forms;
 
 namespace TheTool
 {
     public partial class SiteSelectorPanel : UserControl
     {
+        // prevents recursive event loops when we set cells programmatically
+        private bool _suppressCascade;
+
         public SiteSelectorPanel()
         {
             InitializeComponent();
+
+            // ensure edit commits so CellValueChanged fires immediately for checkboxes
+            dgvSites.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (dgvSites.IsCurrentCellDirty)
+                    dgvSites.CommitEdit(DataGridViewDataErrorContexts.Commit);
+            };
+
+            dgvSites.CellValueChanged += dgvSites_CellValueChanged;
+            dgvSites.CellContentClick += dgvSites_CellContentClick;
         }
 
         /// Loads a list of site names into the grid.
@@ -25,6 +33,7 @@ namespace TheTool
 
             foreach (string site in siteNames)
             {
+                // colSelected (parent), colSiteName (text), colProd, colExt, colESub
                 dgvSites.Rows.Add(false, site, false, false, false);
             }
         }
@@ -36,15 +45,15 @@ namespace TheTool
 
             foreach (DataGridViewRow row in dgvSites.Rows)
             {
-                bool isChecked = Convert.ToBoolean(row.Cells["colSelected"].Value ?? false);
-                if (!isChecked) continue;
+                bool parentChecked = Convert.ToBoolean(row.Cells["colSelected"].Value ?? false);
+                if (!parentChecked) continue;
 
                 string siteName = row.Cells["colSiteName"].Value?.ToString() ?? string.Empty;
                 bool prod = Convert.ToBoolean(row.Cells["colProd"].Value ?? false);
                 bool ext = Convert.ToBoolean(row.Cells["colExt"].Value ?? false);
-                bool other = Convert.ToBoolean(row.Cells["colOther"].Value ?? false);
+                bool esub = Convert.ToBoolean(row.Cells["colESub"].Value ?? false);
 
-                selected.Add((siteName, prod, ext, other));
+                selected.Add((siteName, prod, ext, esub));
             }
 
             return selected;
@@ -62,18 +71,51 @@ namespace TheTool
             }
         }
 
-        //event handler for checkboxes in the IIS list
+        // When any cell value changes, handle parent/children syncing.
         private void dgvSites_CellValueChanged(object sender, DataGridViewCellEventArgs e)
         {
-            if (e.RowIndex < 0) return;
+            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            if (_suppressCascade) return;
 
-            var row = dgvSites.Rows[e.RowIndex];
+            var grid = dgvSites;
+            var row = grid.Rows[e.RowIndex];
+            string colName = grid.Columns[e.ColumnIndex].Name;
 
-            bool prodChecked = Convert.ToBoolean(row.Cells["colProd"].Value ?? false);
-            bool eapChecked = Convert.ToBoolean(row.Cells["colExt"].Value ?? false);
-            bool esubChecked = Convert.ToBoolean(row.Cells["colOther"].Value ?? false);
+            // If the parent checkbox changed, mirror to all children.
+            if (colName == "colSelected")
+            {
+                bool isChecked = Convert.ToBoolean(row.Cells["colSelected"].Value ?? false);
+                try
+                {
+                    _suppressCascade = true; // avoid re-entrancy while we set child cells
+                    row.Cells["colProd"].Value = isChecked;
+                    row.Cells["colExt"].Value = isChecked;
+                    row.Cells["colESub"].Value = isChecked;
+                }
+                finally
+                {
+                    _suppressCascade = false;
+                }
+                return;
+            }
 
-            row.Cells["colSelected"].Value = prodChecked || eapChecked || esubChecked;
+            // If any child changed, update the parent to reflect OR of children.
+            if (colName == "colProd" || colName == "colExt" || colName == "colESub")
+            {
+                bool prodChecked = Convert.ToBoolean(row.Cells["colProd"].Value ?? false);
+                bool eapChecked = Convert.ToBoolean(row.Cells["colExt"].Value ?? false);
+                bool esubChecked = Convert.ToBoolean(row.Cells["colESub"].Value ?? false);
+
+                try
+                {
+                    _suppressCascade = true;
+                    row.Cells["colSelected"].Value = prodChecked || eapChecked || esubChecked;
+                }
+                finally
+                {
+                    _suppressCascade = false;
+                }
+            }
         }
 
         private void dgvSites_CurrentCellDirtyStateChanged(object sender, EventArgs e)
@@ -84,7 +126,7 @@ namespace TheTool
             }
         }
 
-        //checkbox/build validation
+        // checkbox/build validation for child role columns
         private void dgvSites_CellContentClick(object sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0 || e.ColumnIndex < 0)
@@ -92,19 +134,20 @@ namespace TheTool
 
             string colName = dgvSites.Columns[e.ColumnIndex].Name;
 
-            if (colName == "colProd" || colName == "colExt" || colName == "colOther")
+            if (colName == "colProd" || colName == "colExt" || colName == "colESub")
             {
                 string type = colName switch
                 {
                     "colProd" => "Prod",
                     "colExt" => "EAP",
-                    "colOther" => "eSub", 
+                    "colESub" => "eSub",
                     _ => ""
                 };
 
                 if (ZipValidationFunc != null && !ZipValidationFunc(type))
                 {
-                    MessageBox.Show($"A valid .zip file must be selected for {type}.", "Missing ZIP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    MessageBox.Show($"A valid .zip file must be selected for {type}.",
+                        "Missing ZIP", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     dgvSites.CancelEdit();
                 }
             }

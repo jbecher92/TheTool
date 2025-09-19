@@ -13,6 +13,11 @@ namespace TheTool
         //retain these files when cleaning out the target directory
         private static readonly string[] PreserveFiles = { "web.config", "appsettings.json" };
 
+        // NEW: optional override to redirect production base path resolution (used for non-prod wrappers)
+        // Signature: (state, client) => basePath (without tag)
+        // Default: null (production behavior unchanged)
+        public static Func<string, string, string>? ProdBasePathOverride { get; set; }
+
         public static void DeployProduction_Update(
             string state,
             string client,
@@ -106,7 +111,7 @@ namespace TheTool
             CleanupBackupsKeepMostRecent(basePath, state, client);
         }
 
-        // -------- External controller (updated) --------
+        // -------- External controller --------
         public static void DeployExternal_Update(
             string state,
             string client,
@@ -168,7 +173,7 @@ namespace TheTool
 
             Report($"External update for {state}{client} completed.");
 
-            // ------------- local helpers -------------
+            // ------------- local helpers ------------- 
 
             void DeployRoleIfProvided(string roleDisplayName, string? archivePath, string rolePath)
             {
@@ -637,10 +642,21 @@ namespace TheTool
             TryDeleteDirRecursive(path);
         }
 
-        // Resolves the base path for production deployments based on state and client name.
         public static string ResolveProdBasePath(string state, string client)
         {
-            return Path.Combine(@"F:\inetpub\wwwroot", state, state + client);
+            // If an override is provided, use it. This allows temporary redirection for non-prod flows.
+            if (ProdBasePathOverride is not null)
+                return ProdBasePathOverride(state, client);
+
+            var root = AppPaths.SitesRoot; // throws if misconfigured in our helper
+
+            var s = (state ?? "").Trim().ToUpperInvariant();
+            var c = (client ?? "").Trim();
+
+            if (s.Length == 0) throw new ArgumentException("state is required", nameof(state));
+            if (c.Length == 0) throw new ArgumentException("client is required", nameof(client));
+
+            return Path.Combine(root, s, s + c);
         }
 
         private static string MakeProdBackupZipPath(string basePath, string state, string client, string prevFolder)
@@ -835,7 +851,7 @@ namespace TheTool
         // Applies a build from the specified source directory to the target site directory, preserving certain files.
         public static void ApplyBuild(string siteName, string buildSourceDir, bool isProd)
         {
-            string baseWebRoot = @"F:\\inetpub\\wwwroot";
+            string baseWebRoot = AppPaths.SitesRoot;
             string targetDir = Path.Combine(baseWebRoot, siteName);
 
             if (!Directory.Exists(targetDir))
@@ -960,7 +976,5 @@ namespace TheTool
                 catch { /* ignore */ }
             }
         }
-
-
     }
 }

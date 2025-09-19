@@ -1,0 +1,14 @@
+{
+  "NotesForUser":  "Set DeploymentFlavor to prod, test, or internal. Adjust SitesRootPath/SitesDrive if updating production and the drive is not F",
+  
+  "DeploymentFlavor": "prod",
+
+  "SitesRootPath": "F:\\inetpub\\wwwroot",
+  "SitesDrive": "F:",
+
+  "ValidatePath": "G:\\inetpub\\wwwroot",
+  "ValidateDrive": "G:",
+
+  "InternalPath": "C:\\inetpub\\wwwroot",
+  "InternalDrive": "C:"
+}

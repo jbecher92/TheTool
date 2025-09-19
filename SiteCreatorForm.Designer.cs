@@ -76,14 +76,14 @@
             // chkCaseInfoSearch
             this.chkCaseInfoSearch.Location = new System.Drawing.Point(144, 72);
             this.chkCaseInfoSearch.Name = "chkCaseInfoSearch";
-            this.chkCaseInfoSearch.Size = new System.Drawing.Size(160, 30);
+            this.chkCaseInfoSearch.Size = new System.Drawing.Size(170, 30);
             this.chkCaseInfoSearch.Text = "CaseInfoSearch";
             this.chkCaseInfoSearch.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
 
             // chkESubpoena
-            this.chkESubpoena.Location = new System.Drawing.Point(310, 72);
+            this.chkESubpoena.Location = new System.Drawing.Point(320, 72);
             this.chkESubpoena.Name = "chkESubpoena";
-            this.chkESubpoena.Size = new System.Drawing.Size(130, 30);
+            this.chkESubpoena.Size = new System.Drawing.Size(160, 30);
             this.chkESubpoena.Text = "eSubpoena";
             this.chkESubpoena.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
 

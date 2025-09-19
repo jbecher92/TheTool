@@ -45,8 +45,9 @@ namespace TheTool
         private bool ValidateInputs(bool updateUiOnly)
         {
             bool stateOk = State.Length == 2
-                            && State.All(char.IsLetter)
-                            && StateHash.ValidStates.Contains(State);
+                           && State.All(char.IsLetter)
+                           && StateHash.ValidStates.Contains(State);
+
             bool clientOk = !string.IsNullOrWhiteSpace(Client);
 
             // Require at least one real role; DA is implied by externals
@@ -54,7 +55,8 @@ namespace TheTool
 
             btnCreate.Enabled = stateOk && clientOk && anyRole;
 
-            try { txtPreview.Text = BuildPreviewText(); } catch { /* keep silent in preview */ }
+            // Always show *something* in preview; never swallow to blank.
+            txtPreview.Text = BuildPreviewText(stateOk, clientOk);
 
             if (!updateUiOnly)
             {
@@ -66,22 +68,24 @@ namespace TheTool
             return stateOk && clientOk && anyRole;
         }
 
-        private string BuildPreviewText()
+        private string BuildPreviewText(bool stateOk, bool clientOk)
         {
-            // Preview only — no IO creation here.
+            if (!stateOk || !clientOk)
+                return "(enter a valid 2-letter state and client to see a preview)";
+
             string site = State + Client;
-
-            // Production preview target: …\{STATE}{CLIENT}\{tag}
-            string prodBase = FileManager.ResolveProdBasePath(State, Client);
-            string prodTarget = Path.Combine(prodBase, TodayTag());
-
-            // External client root: …\{STATE}\PbkExternal\{STATE}{CLIENT} (predicted safely)
-            string clientRoot = ResolveExternalRootForPreview(State, Client);
-
             var lines = new List<string>();
 
+            // Production
             if (CreateProd)
+            {
+                string prodBase = SafeResolveProdBasePathForPreview(State, Client);
+                string prodTarget = Path.Combine(prodBase, TodayTag());
                 lines.Add($"{site} → {prodTarget}");
+            }
+
+            // External client root
+            string clientRoot = ResolveExternalRootForPreview(State, Client);
 
             if (CreateEAP)
                 lines.Add($"{site}CaseInfoSearch → {Path.Combine(clientRoot, "CaseInfoSearch")}");
@@ -92,15 +96,32 @@ namespace TheTool
             // DataAccess is implied if any external is selected
             if (CreateEAP || CreateESub)
             {
-                // Prefer PBKDataAccess if already present under the *existing* client root; otherwise show DataAccess.
-                // IMPORTANT: In preview we don't enumerate if the state folder doesn't exist yet.
+                // Prefer PBKDataAccess if it already exists; otherwise show DataAccess.
+                // Directory.Exists is safe even if parents don't exist.
                 string daFolder = Directory.Exists(Path.Combine(clientRoot, "PBKDataAccess"))
                                   ? "PBKDataAccess"
                                   : "DataAccess";
                 lines.Add($"{site}{daFolder} → {Path.Combine(clientRoot, daFolder)}");
             }
 
-            return string.Join(Environment.NewLine, lines);
+            return lines.Count > 0
+                ? string.Join(Environment.NewLine, lines)
+                : "(select at least one site/app to create)";
+        }
+
+        private static string SafeResolveProdBasePathForPreview(string state, string client, string wwwrootBase = @"F:\inetpub\wwwroot")
+        {
+            // Use your FileManager when available; otherwise predict a sensible path so preview still works.
+            try
+            {
+                // Your existing method (may read TheTool.config.json).
+                return FileManager.ResolveProdBasePath(state, client);
+            }
+            catch
+            {
+                // Fallback preview pattern: F:\inetpub\wwwroot\{STATE}\{STATE}{CLIENT}
+                return Path.Combine(wwwrootBase, state, state + client);
+            }
         }
 
         private static string ResolveExternalRootForPreview(string state, string client, string wwwrootBase = @"F:\inetpub\wwwroot")
@@ -116,7 +137,7 @@ namespace TheTool
             if (!Directory.Exists(stateBase))
                 return Path.Combine(pbk, state + client);
 
-            // If it exists, we can safely check for an existing "*external*" variant; otherwise default to PbkExternal.
+            // If it exists, we can safely check for any "*external*" variant; otherwise default to PbkExternal.
             string externalBase = Directory.Exists(pbk)
                 ? pbk
                 : Directory.GetDirectories(stateBase, "*external*", SearchOption.TopDirectoryOnly)
