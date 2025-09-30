@@ -104,16 +104,16 @@ namespace TheTool
 
             lblProgress = new Label
             {
-                Dock = DockStyle.Top,
+                Dock = DockStyle.Fill,
                 Height = 28,
-                TextAlign = ContentAlignment.MiddleLeft,
+                TextAlign = ContentAlignment.MiddleCenter,
                 Font = new Font(Font, FontStyle.Bold),
                 Text = "Creation in progress…"
             };
 
             prg = new ProgressBar
             {
-                Dock = DockStyle.Top,
+                Dock = DockStyle.Bottom,
                 Height = 14,
                 Style = ProgressBarStyle.Marquee,
                 MarqueeAnimationSpeed = 30

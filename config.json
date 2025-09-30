@@ -8,8 +8,8 @@
   "SitesRootPath": "F:\\inetpub\\wwwroot",
   "SitesDrive": "F:",
 
-  "ValidatePath": "D:\\inetpub\\wwwroot",
-  "ValidateDrive": "D:",
+  "ValidatePath": "G:\\inetpub\\wwwroot",
+  "ValidateDrive": "G:",
 
   "InternalPath": "C:\\inetpub\\wwwroot",
   "InternalDrive": "C:"
