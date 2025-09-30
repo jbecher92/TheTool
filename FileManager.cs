@@ -10,17 +10,110 @@ namespace TheTool
 {
     public static class FileManager
     {
-        //retain these files when cleaning out the target directory
-        private static readonly string[] PreserveFiles = { "web.config", "appsettings.json" };
+       
+        //public static string ResolveRoot(string state, string client, string deploymentFlavor)
+        //{
+        //    string flavor = (deploymentFlavor ?? "prod").ToLowerInvariant();
 
-        // NEW: optional override to redirect production base path resolution (used for non-prod wrappers)
-        // Signature: (state, client) => basePath (without tag)
-        // Default: null (production behavior unchanged)
-        public static Func<string, string, string>? ProdBasePathOverride { get; set; }
+        //    string root = flavor switch
+        //    {
+        //        "internal" => AppConfigManager.Config.GetInternalPath(),
+        //        "test" => AppConfigManager.Config.GetValidatePath(),
+        //        _ => AppConfigManager.Config.GetSitesRootPath()
+        //    };
+
+        //    if (string.IsNullOrWhiteSpace(root))
+        //        throw new InvalidOperationException($"Root path not configured for '{flavor}'.");
+
+        //    return Path.GetFullPath(root);
+        //}
+
+        /// <summary>
+        /// PURE: Production base path under the resolvedRoot (no disk I/O).
+        /// </summary>
+        public static string ResolveProdBasePath(string resolvedRoot, string state, string client)
+        {
+            if (string.IsNullOrWhiteSpace(resolvedRoot))
+                throw new ArgumentException("resolvedRoot must be provided", nameof(resolvedRoot));
+            if (string.IsNullOrWhiteSpace(state))
+                throw new ArgumentException("state is required", nameof(state));
+            if (string.IsNullOrWhiteSpace(client))
+                throw new ArgumentException("client is required", nameof(client));
+
+            string s = state.Trim().ToUpperInvariant();
+            string c = client.Trim();
+
+            // Production gets a state folder; internal/test do NOT.
+            string flavor = (AppConfigManager.Config.DeploymentFlavor ?? "prod").Trim().ToLowerInvariant();
+
+            string basePath = flavor == "prod"
+                ? Path.Combine(resolvedRoot, s, s + c)  // PROD:   {root}\{STATE}\{STATE}{client}
+                : Path.Combine(resolvedRoot, s + c);    // NON-PROD: {root}\{STATE}{client}
+
+            return Path.GetFullPath(basePath);
+        }
+
+
+
+        /// - prod:      {resolvedRoot}\{STATE}\PbkExternal\{STATE}{client}
+        /// - non-prod:  {resolvedRoot}\PbkExternal\{STATE}{client}
+        /// Note: Folder existence is NOT checked here; execution code can create/verify as needed.
+        public static string ResolveExternalRoot(
+            string state,
+            string client,
+            string deploymentFlavor,
+            string resolvedRoot,
+            Dictionary<string, string>? /*unused*/ cache = null)
+        {
+            if (string.IsNullOrWhiteSpace(state))
+                throw new ArgumentException("state is required", nameof(state));
+            if (string.IsNullOrWhiteSpace(client))
+                throw new ArgumentException("client is required", nameof(client));
+            if (string.IsNullOrWhiteSpace(resolvedRoot))
+                throw new ArgumentException("resolvedRoot must be provided", nameof(resolvedRoot));
+
+            string s = state.Trim().ToUpperInvariant();
+            string c = client.Trim();
+            string flavor = (deploymentFlavor ?? "prod").Trim().ToLowerInvariant();
+
+            // prod → {root}\{STATE}\..., non-prod → {root}\...
+            string basePath = flavor == "prod"
+                ? Path.Combine(resolvedRoot, s)
+                : resolvedRoot;
+
+            // Pick the first folder whose name contains "external" (case-insensitive), else "PbkExternal".
+            string containerName = "PbkExternal";
+            try
+            {
+                if (Directory.Exists(basePath))
+                {
+                    var match = Directory.GetDirectories(basePath, "*", SearchOption.TopDirectoryOnly)
+                                         .Select(Path.GetFileName)
+                                         .FirstOrDefault(name =>
+                                             !string.IsNullOrEmpty(name) &&
+                                             name.IndexOf("external", StringComparison.OrdinalIgnoreCase) >= 0);
+                    if (!string.IsNullOrEmpty(match))
+                        containerName = match;
+                }
+            }
+            catch
+            {
+                // swallow read errors; fall back to PbkExternal
+            }
+
+            string clientRoot = Path.Combine(basePath, containerName, s + c);
+            return Path.GetFullPath(clientRoot);
+        }
+
+
+
+        private static readonly string[] PreserveFiles = { "web.config", "appsettings.json" };
+        //public static Func<string, string, string>? ProdBasePathOverride { get; set; }
 
         public static void DeployProduction_Update(
             string state,
             string client,
+            string resolvedRoot,
             string prevFolder,
             string newFolder,
             string newBuildArchivePath,
@@ -34,12 +127,11 @@ namespace TheTool
             if (string.IsNullOrWhiteSpace(newBuildArchivePath) || !File.Exists(newBuildArchivePath))
                 throw new FileNotFoundException("New build archive not found", newBuildArchivePath);
 
-            // Allow .zip and .7z
             var ext = Path.GetExtension(newBuildArchivePath).ToLowerInvariant();
             if (ext != ".zip" && ext != ".7z")
                 throw new NotSupportedException("Only .zip or .7z extraction is supported at this time.");
 
-            var basePath = ResolveProdBasePath(state, client);
+            var basePath = ResolveProdBasePath(resolvedRoot, state, client);
             var prevPath = Path.Combine(basePath, prevFolder);
             var newPath = Path.Combine(basePath, newFolder);
 
@@ -57,10 +149,10 @@ namespace TheTool
                 var backupZip = MakeProdBackupZipPath(basePath, state, client, prevFolder);
                 CreateZipArchive(prevPath, backupZip);
 
-                // 2) Immediately rename previous folder to temp_yyyyMMdd_HHmmss and update prevPath
+                // 2) Rename previous folder to temp_* and operate on that
                 var tempPath = MakeUniqueTempFolder(basePath, "temp_" + DateTime.Now.ToString("MMddyyyy_HHmmss"));
                 Directory.Move(prevPath, tempPath);
-                prevPath = tempPath; // from here on, operate against the temp folder
+                prevPath = tempPath;
 
                 // 3) Clean temp (old) folder, keeping preserved files
                 DeleteAllInsideExcept(prevPath, ProdPreserveRelative);
@@ -103,82 +195,97 @@ namespace TheTool
 
             // 7) Cleanup temp (old) folder and deployed zip
             if (!creationPath)
-                TryDeleteDirRecursive(prevPath); // prevPath now points to temp_*
+                TryDeleteDirRecursive(prevPath);
 
             try { File.Delete(dstZip); } catch { /* ignore */ }
 
             // 8) Keep only the most recent backup zip
             CleanupBackupsKeepMostRecent(basePath, state, client);
+
+            Report($"{state}{client}: Production Update Complete.");
         }
 
-        // -------- External controller --------
+        // -------- External controller (UPDATE) --------
         public static void DeployExternal_Update(
+            string resolvedRoot,
             string state,
             string client,
-            string externalRoot,
             string backupTag,
             string? caseInfoSearchZip,
             string? esubpoenaZip,
             string? dataAccessZip,
             Action<string>? onProgress = null)
         {
-            void Report(string msg)
-            {
-                try { onProgress?.Invoke(msg); } catch { /* ignore UI errors */ }
-            }
+            void Report(string msg) { try { onProgress?.Invoke(msg); } catch { } }
 
+            if (string.IsNullOrWhiteSpace(resolvedRoot)) throw new ArgumentException("resolvedRoot required");
             if (string.IsNullOrWhiteSpace(state)) throw new ArgumentException("state required");
             if (string.IsNullOrWhiteSpace(client)) throw new ArgumentException("client required");
-            if (string.IsNullOrWhiteSpace(externalRoot)) throw new ArgumentException("externalRoot required");
-            if (!Directory.Exists(externalRoot))
-                throw new DirectoryNotFoundException($"External root not found: {externalRoot}");
+            if (string.IsNullOrWhiteSpace(backupTag)) throw new ArgumentException("backupTag required");
 
-            // Validate names if provided
+            // Option-1: Resolve deterministically (pure), then do any disk checks/creates here (execution phase).
+            // Default (pure) path based on config
+            string externalRoot = ResolveExternalRoot(state, client, AppConfigManager.Config.DeploymentFlavor, resolvedRoot);
+
+            // EXECUTION-TIME detection: choose the on-disk folder (PbkExternal vs ExternalSites)
+            string s = state.ToUpperInvariant();
+            string flavor = (AppConfigManager.Config.DeploymentFlavor ?? "prod").Trim().ToLowerInvariant();
+            string basePath = flavor == "prod" ? Path.Combine(resolvedRoot, s) : resolvedRoot;
+
+            string candidatePbk = Path.Combine(basePath, "PbkExternal", s + client);
+            string candidateExt = Path.Combine(basePath, "ExternalSites", s + client);
+
+            // Prefer whichever exists
+            if (Directory.Exists(candidateExt))
+                externalRoot = candidateExt;
+            else if (Directory.Exists(candidatePbk))
+                externalRoot = candidatePbk;
+            else
+                throw new DirectoryNotFoundException(
+                    $"External root not found. Looked for:\n  {candidatePbk}\n  {candidateExt}");
+
+
+            // Validate archives (execution-time)
             if (!string.IsNullOrWhiteSpace(caseInfoSearchZip)) ValidateBuildName(caseInfoSearchZip, "caseinfosearch");
             if (!string.IsNullOrWhiteSpace(esubpoenaZip)) ValidateBuildName(esubpoenaZip, "esubpoena");
             if (!string.IsNullOrWhiteSpace(dataAccessZip)) ValidateBuildName(dataAccessZip, "dataaccess");
 
-            // Decide DataAccess folder name (prefer PBKDataAccess if present)
+            // Determine DataAccess folder name at execution time only
             string daFolder = Directory.Exists(Path.Combine(externalRoot, "PBKDataAccess")) ? "PBKDataAccess" : "DataAccess";
 
-            // Canonical target paths (no extra layer)
+            // Canonical paths
             string cisPath = Path.Combine(externalRoot, "CaseInfoSearch");
             string esPath = Path.Combine(externalRoot, "eSubpoena");
             string daPath = Path.Combine(externalRoot, daFolder);
 
-            // Create a *tag* folder directly under the client external root for backups, e.g. ...\KSTest1\20250918\
+            // Backup tag directory
             string backupDir = GetExternalBackupDir(externalRoot, backupTag);
 
-            // --- Per-app BACKUP (only for roles we’re updating) ---
+            // --- Backups ---
             if (!string.IsNullOrWhiteSpace(caseInfoSearchZip))
-            {
                 TryBackupFolder(cisPath, Path.Combine(backupDir, "CaseInfoSearch.zip"), Report);
-            }
-            if (!string.IsNullOrWhiteSpace(esubpoenaZip))
-            {
-                TryBackupFolder(esPath, Path.Combine(backupDir, "eSubpoena.zip"), Report);
-            }
-            if (!string.IsNullOrWhiteSpace(dataAccessZip))
-            {
-                TryBackupFolder(daPath, Path.Combine(backupDir, daFolder + ".zip"), Report);
-            }
 
-            // --- Deploy each role provided (overwrite-in-place, preserve exclusions) ---
+            if (!string.IsNullOrWhiteSpace(esubpoenaZip))
+                TryBackupFolder(esPath, Path.Combine(backupDir, "eSubpoena.zip"), Report);
+
+            if (!string.IsNullOrWhiteSpace(dataAccessZip))
+                TryBackupFolder(daPath, Path.Combine(backupDir, daFolder + ".zip"), Report);
+
+            // --- Deploy roles ---
             DeployRoleIfProvided("CaseInfoSearch", caseInfoSearchZip, cisPath);
             DeployRoleIfProvided("eSubpoena", esubpoenaZip, esPath);
-            DeployRoleIfProvided(daFolder, dataAccessZip, daPath); // archive name & folder match (DataAccess or PBKDataAccess)
+            DeployRoleIfProvided(daFolder, dataAccessZip, daPath);
 
-            // Keep ONLY the most recent backup directory (purge older tag folders)
+            // Cleanup old backups
             KeepOnlyMostRecentBackup(externalRoot, backupTag, Report);
 
-            Report($"External update for {state}{client} completed.");
+            Report($"{state}{client}: External Update(s) Complete.");
 
-            // ------------- local helpers ------------- 
-
+            // -------- Local helpers ----------
             void DeployRoleIfProvided(string roleDisplayName, string? archivePath, string rolePath)
             {
                 if (string.IsNullOrWhiteSpace(archivePath))
-                    return; // skip if not part of this deployment
+                    return;
 
                 var ext = Path.GetExtension(archivePath).ToLowerInvariant();
                 if (ext != ".zip" && ext != ".7z")
@@ -188,40 +295,33 @@ namespace TheTool
                 }
 
                 Directory.CreateDirectory(rolePath);
-
-                // Clear contents but keep preserved items (configs, etc.)
                 DeleteAllInsideExcept(rolePath, ExternalPreserveRelative);
 
-                // Copy the archive beside the extraction target (your existing pattern)
                 var dstArchive = Path.Combine(rolePath, Path.GetFileName(archivePath));
                 File.Copy(archivePath, dstArchive, overwrite: true);
 
-                // Extract (zip natively, 7z via helper) with skip-overwrite semantics
                 ExtractArchiveSkipOverwrite(dstArchive, rolePath);
-
-                // Ensure we never end up with ...\App\App after extraction
                 FlattenExtraLayer(rolePath);
 
-                // Remove the copied archive after successful extract (consistent with prod)
-                try { if (File.Exists(dstArchive)) File.Delete(dstArchive); } catch { /* ignore */ }
+                try { if (File.Exists(dstArchive)) File.Delete(dstArchive); } catch { }
 
-                Report($"{roleDisplayName}: done.");
+                //Report($"{roleDisplayName}: done.");
             }
 
-            // Backup if folder exists and isn’t empty; uses your existing CreateZipArchive
             static void TryBackupFolder(string sourceDir, string archivePath, Action<string> log)
             {
                 if (!Directory.Exists(sourceDir)) { log($"[Backup] Skip: '{sourceDir}' not found."); return; }
                 if (!Directory.EnumerateFileSystemEntries(sourceDir).Any()) { log($"[Backup] Skip: '{sourceDir}' empty."); return; }
 
-                // Ensure parent exists
                 Directory.CreateDirectory(Path.GetDirectoryName(archivePath)!);
-
-                // Use your existing zip helper for consistency with Production
                 CreateZipArchive(sourceDir, archivePath);
-                log($"[Backup] {archivePath}");
+                //log($"[Backup] {archivePath}");
             }
         }
+
+        // =====================================================================
+        // I/O UTILITIES (execution-time only)
+        // =====================================================================
 
         private static string MakeUniqueTempFolder(string parent, string baseName)
         {
@@ -237,7 +337,6 @@ namespace TheTool
             }
         }
 
-        // Extracts .zip (native) and .7z (via 7z.exe) into destRoot, SKIPPING existing files
         private static void ExtractArchiveSkipOverwrite(string archivePath, string destRoot)
         {
             var ext = Path.GetExtension(archivePath).ToLowerInvariant();
@@ -324,7 +423,6 @@ namespace TheTool
             return null;
         }
 
-        // Updates the client directory by creating a backup, cleaning it, and copying new build files from the source directory.
         public static void UpdateClientDirectory(string targetDir, string newBuildSourceDir)
         {
             if (!Directory.Exists(targetDir))
@@ -340,57 +438,48 @@ namespace TheTool
             CopyNewBuildFiles(newBuildSourceDir, targetDir);
         }
 
-        // Creates a new site directory at the specified path, throwing an exception if it already exists.
         public static void CreateSiteDirectory(string path, Action<string>? onProgress = null)
         {
             if (!Directory.Exists(path))
             {
                 Directory.CreateDirectory(path);
-                onProgress?.Invoke($"Created new directory: {path}");
+                onProgress?.Invoke($"DNE, Created directory and Updating: {path}");
             }
             else
             {
-                // Instead of throwing, just reuse the folder (supports same-day updates)
-                onProgress?.Invoke($"Directory already exists, continuing update: {path}");
+                //onProgress?.Invoke($"Updating: {path}");
             }
         }
 
-        // Creates a ZIP archive from the specified source directory to the specified ZIP file path, overwriting if it already exists.
         private static void CreateZipArchive(string sourceDir, string zipPath)
         {
-            // Normalize
             var sourceFull = Path.GetFullPath(sourceDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
                             + Path.DirectorySeparatorChar;
             var destFull = Path.GetFullPath(zipPath);
 
-            // Always delete the final target if it exists (old backup)
             if (File.Exists(destFull))
                 File.Delete(destFull);
 
-            // If the destination .zip is INSIDE the sourceDir, create elsewhere then move it in.
             if (destFull.StartsWith(sourceFull, StringComparison.OrdinalIgnoreCase))
             {
                 var tempZip = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".zip");
                 try
                 {
                     if (File.Exists(tempZip)) File.Delete(tempZip);
-                    System.IO.Compression.ZipFile.CreateFromDirectory(sourceDir, tempZip, CompressionLevel.Optimal, includeBaseDirectory: false);
-                    // Move into place (overwrite already handled above)
+                    ZipFile.CreateFromDirectory(sourceDir, tempZip, CompressionLevel.Optimal, includeBaseDirectory: false);
                     File.Move(tempZip, destFull);
                 }
                 finally
                 {
-                    try { if (File.Exists(tempZip)) File.Delete(tempZip); } catch { /* ignore */ }
+                    try { if (File.Exists(tempZip)) File.Delete(tempZip); } catch { }
                 }
             }
             else
             {
-                // Normal case: zip target is outside the source dir
-                System.IO.Compression.ZipFile.CreateFromDirectory(sourceDir, destFull, CompressionLevel.Optimal, includeBaseDirectory: false);
+                ZipFile.CreateFromDirectory(sourceDir, destFull, CompressionLevel.Optimal, includeBaseDirectory: false);
             }
         }
 
-        // Create one tag folder directly under the client's External root (no "_backups")
         private static string GetExternalBackupDir(string externalRoot, string tag)
         {
             var dir = Path.Combine(externalRoot, tag);
@@ -398,7 +487,6 @@ namespace TheTool
             return dir;
         }
 
-        // Keep ONLY the most recent backup directory (by tag name or last write); delete older ones.
         private static void KeepOnlyMostRecentBackup(string externalRoot, string currentTag, Action<string>? log = null)
         {
             var dirs = Directory.EnumerateDirectories(externalRoot)
@@ -406,17 +494,15 @@ namespace TheTool
                                 .Where(di =>
                                 {
                                     var name = di.Name;
-                                    // Prefer YYYYMMDD tags; otherwise fall back to any 8-digit folder name
                                     return name.Length == 8 && name.All(char.IsDigit);
                                 })
-                                .OrderByDescending(di => di.Name) // YYYYMMDD sorts lexicographically
+                                .OrderByDescending(di => di.Name)
                                 .ToList();
 
-            // We want to keep just ONE: the most recent (which is usually the one we just created)
             bool first = true;
             foreach (var di in dirs)
             {
-                if (first) { first = false; continue; } // keep the newest
+                if (first) { first = false; continue; }
                 try
                 {
                     di.Delete(true);
@@ -429,7 +515,6 @@ namespace TheTool
             }
         }
 
-        // Cleans the specified directory by deleting all files and subdirectories except for those specified in the PreserveFiles list.
         private static void CleanDirectoryExceptConfig(string dir)
         {
             foreach (string file in Directory.GetFiles(dir))
@@ -441,12 +526,11 @@ namespace TheTool
 
             foreach (string subDir in Directory.GetDirectories(dir))
             {
-                if (IsProtectedDir(subDir)) continue; // do not delete *webconfigbackup* folders
+                if (IsProtectedDir(subDir)) continue;
                 Directory.Delete(subDir, true);
             }
         }
 
-        // Copies new build files from the source directory to the destination directory, maintaining their relative paths.
         private static void CopyNewBuildFiles(string sourceDir, string destDir)
         {
             foreach (string filePath in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
@@ -458,7 +542,6 @@ namespace TheTool
             }
         }
 
-        //Validates the build archive name based on the site type and throws exceptions if invalid.
         public static void ValidateBuildName(string archivePath, string siteType)
         {
             if (string.IsNullOrWhiteSpace(archivePath))
@@ -473,19 +556,14 @@ namespace TheTool
             {
                 "production" => fileName.StartsWith("PBK", StringComparison.OrdinalIgnoreCase)
                                  || fileName.StartsWith("DBK", StringComparison.OrdinalIgnoreCase),
-
                 "caseinfosearch" => fileName.StartsWith("CaseInfoSearch_", StringComparison.OrdinalIgnoreCase),
-
                 "esubpoena" => fileName.StartsWith("eSubpoena_", StringComparison.OrdinalIgnoreCase),
-
                 "dataaccess" => fileName.StartsWith("PBKDataAccess_", StringComparison.OrdinalIgnoreCase),
-
                 _ => throw new ArgumentException($"Unknown site type: {siteType}")
             };
 
             if (!isValid)
-                throw new InvalidOperationException(
-                    $"Invalid build archive name for {siteType}: {fileName}");
+                throw new InvalidOperationException($"Invalid build archive name for {siteType}: {fileName}");
         }
 
         public static bool IsValidBuildName(string? archivePath, string siteType)
@@ -499,24 +577,15 @@ namespace TheTool
             {
                 "production" => fileName.StartsWith("PBK", StringComparison.OrdinalIgnoreCase)
                                  || fileName.StartsWith("DBK", StringComparison.OrdinalIgnoreCase),
-
                 "caseinfosearch" => fileName.StartsWith("CaseInfoSearch_", StringComparison.OrdinalIgnoreCase),
-
                 "esubpoena" => fileName.StartsWith("eSubpoena_", StringComparison.OrdinalIgnoreCase),
-
                 "dataaccess" => fileName.StartsWith("PBKDataAccess_", StringComparison.OrdinalIgnoreCase),
-
                 _ => false
             };
         }
 
-        // Ensures that the directory exists, creating it if necessary.
-        private static void EnsureDirExists(string path)
-        {
-            Directory.CreateDirectory(path);
-        }
+        private static void EnsureDirExists(string path) => Directory.CreateDirectory(path);
 
-        // Copies preserved files from the source root to the destination root, maintaining their relative paths.
         private static void CopyPreservedFiles(string srcRoot, string dstRoot, IEnumerable<string> relPaths)
         {
             foreach (var rel in relPaths)
@@ -529,7 +598,6 @@ namespace TheTool
 
         private static void CopyFileWithRetry(string src, string dst, int maxAttempts = 8, int delayMs = 250)
         {
-            // Short-circuit if src == dst (same-day update self-copy)
             if (PathsEqual(src, dst)) return;
 
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
@@ -545,7 +613,7 @@ namespace TheTool
                             File.SetAttributes(dst, attr & ~FileAttributes.ReadOnly);
                         File.Delete(dst);
                     }
-                    catch { /* swallow; will retry */ }
+                    catch { }
                 }
             }
 
@@ -563,25 +631,22 @@ namespace TheTool
                     }
 
                     File.Copy(src, dst, overwrite: false);
-                    return; // success
+                    return;
                 }
                 catch (IOException) when (attempt < maxAttempts)
                 {
                     Thread.Sleep(delayMs);
                     TryDeleteDst();
-                    continue;
                 }
                 catch (UnauthorizedAccessException) when (attempt < maxAttempts)
                 {
                     Thread.Sleep(delayMs);
                     TryDeleteDst();
-                    continue;
                 }
             }
             File.Copy(src, dst, overwrite: false);
         }
 
-        // Deletes all files and directories inside the specified root, except for those specified in the relKeep list.
         private static void DeleteAllInsideExcept(string root, IEnumerable<string> relKeep)
         {
             var keepFullPaths = new HashSet<string>(
@@ -597,13 +662,12 @@ namespace TheTool
                 }
             }
 
-            // Delete empty directories from deepest upward, skipping any that contain preserved files
             var allDirs = Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories)
                                    .OrderByDescending(p => p.Length);
 
             foreach (var d in allDirs)
             {
-                if (IsProtectedDir(d)) continue; // protect webconfigbackup dirs
+                if (IsProtectedDir(d)) continue;
 
                 var dirFull = Path.GetFullPath(d);
                 bool containsKept = keepFullPaths.Any(k =>
@@ -629,44 +693,21 @@ namespace TheTool
 
         private static void TryDeleteDir(string path)
         {
-            try { Directory.Delete(path, recursive: false); } catch { /* ignore */ }
+            try { Directory.Delete(path, recursive: false); } catch { }
         }
 
         private static void TryDeleteDirRecursive(string path)
         {
-            try { Directory.Delete(path, recursive: true); } catch { /* ignore */ }
+            try { Directory.Delete(path, recursive: true); } catch { }
         }
 
-        public static void SafeDeleteDirectory(string path)
-        {
-            TryDeleteDirRecursive(path);
-        }
-
-        public static string ResolveProdBasePath(string state, string client)
-        {
-            // If an override is provided, use it. This allows temporary redirection for non-prod flows.
-            if (ProdBasePathOverride is not null)
-                return ProdBasePathOverride(state, client);
-
-            var root = AppPaths.SitesRoot; // throws if misconfigured in our helper
-
-            var s = (state ?? "").Trim().ToUpperInvariant();
-            var c = (client ?? "").Trim();
-
-            if (s.Length == 0) throw new ArgumentException("state is required", nameof(state));
-            if (c.Length == 0) throw new ArgumentException("client is required", nameof(client));
-
-            return Path.Combine(root, s, s + c);
-        }
+        //public static void SafeDeleteDirectory(string path) => TryDeleteDirRecursive(path);
 
         private static string MakeProdBackupZipPath(string basePath, string state, string client, string prevFolder)
         {
             return Path.Combine(basePath, $"{state}{client}_{prevFolder}.zip");
         }
 
-        // NOTE: Removed MakeExternalBackupZipPath — we now do per-app backups under <externalRoot>\<tag>\*.zip
-
-        // List of relative paths to preserve during production deployment cleanup
         private static readonly string[] ProdPreserveRelative =
         {
             @"app\environments\config.json",
@@ -696,19 +737,18 @@ namespace TheTool
             return false;
         }
 
-        private static bool VerifyProductionDeployment(string newPath)
-        {
-            try
-            {
-                if (!Directory.Exists(newPath)) return false;
-                var webConfig = Path.Combine(newPath, "web.config");
-                if (!File.Exists(webConfig)) return false;
-                return HasNonPreservedFiles(newPath);
-            }
-            catch { return false; }
-        }
+        //private static bool VerifyProductionDeployment(string newPath)
+        //{
+        //    try
+        //    {
+        //        if (!Directory.Exists(newPath)) return false;
+        //        var webConfig = Path.Combine(newPath, "web.config");
+        //        if (!File.Exists(webConfig)) return false;
+        //        return HasNonPreservedFiles(newPath);
+        //    }
+        //    catch { return false; }
+        //}
 
-        // Keep only the most recent {STATE}{CLIENT}_*.zip in basePath (delete older ones)
         private static void CleanupBackupsKeepMostRecent(string basePath, string state, string client)
         {
             try
@@ -735,16 +775,14 @@ namespace TheTool
                 }
 
                 var ordered = zips.OrderByDescending(ExtractNameDateOrMin).ToList();
-                var keep = ordered.First();
                 foreach (var p in ordered.Skip(1))
                 {
-                    try { File.Delete(p); } catch { /* ignore */ }
+                    try { File.Delete(p); } catch { }
                 }
             }
-            catch { /* ignore */ }
+            catch { }
         }
 
-        // When there is no dated prev folder, copy preserved files from basePath itself (overwrite)
         private static void ForceCopyPreservedFilesFromBase(string basePath, string newPath)
         {
             CopyOverwriteSkipSelf(Path.Combine(basePath, @"web.config"),
@@ -754,7 +792,6 @@ namespace TheTool
                                   Path.Combine(newPath, @"app\environments\config.json"));
         }
 
-        // Force the preserved files to be the final copies in the new version folder (overwrite)
         private static void ForceCopyPreservedFiles(string prevPath, string newPath)
         {
             CopyOverwriteSkipSelf(Path.Combine(prevPath, @"web.config"),
@@ -766,20 +803,17 @@ namespace TheTool
 
         private static void CopyOverwriteSkipSelf(string src, string dst)
         {
-            if (PathsEqual(src, dst)) return; // no-op on self-copy (same-day update)
+            if (PathsEqual(src, dst)) return;
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
             File.Copy(src, dst, overwrite: true);
         }
 
-        // Never delete folders that contain "webconfigbackup" (case-insensitive)
         private static bool IsProtectedDir(string path)
         {
             var name = Path.GetFileName(path);
             return name.IndexOf("webconfigbackup", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
-        // Flatten ANY top-level PBK/DBK folder(s) into 'root' (no overwrites), then remove them.
-        // Works even if 'root' already contains 'app' and 'web.config'.
         private static void MergeFlattenTopFolderNoOverwrite(string root)
         {
             if (!Directory.Exists(root)) return;
@@ -799,28 +833,25 @@ namespace TheTool
             {
                 foreach (var srcFile in Directory.EnumerateFiles(top, "*", SearchOption.AllDirectories))
                 {
-                    var rel = Path.GetRelativePath(top, srcFile); // keep build's internal structure
+                    var rel = Path.GetRelativePath(top, srcFile);
                     var dst = Path.Combine(root, rel);
 
                     Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
 
-                    // DO NOT overwrite existing files (preserved configs already copied)
                     if (!File.Exists(dst))
                     {
                         try { File.Move(srcFile, dst); }
                         catch
                         {
-                            try { File.Copy(srcFile, dst, overwrite: false); } catch { /* ignore */ }
+                            try { File.Copy(srcFile, dst, overwrite: false); } catch { }
                         }
                     }
                 }
 
-                // Remove the wrapper folder (guard protected names just in case)
                 if (!IsProtectedDir(top))
                     TryDeleteDirRecursive(top);
             }
 
-            // Prune empty dirs but never touch *webconfigbackup*
             foreach (var dir in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories)
                                          .OrderByDescending(p => p.Length))
             {
@@ -830,13 +861,10 @@ namespace TheTool
                     if (!Directory.EnumerateFileSystemEntries(dir).Any())
                         Directory.Delete(dir, false);
                 }
-                catch { /* ignore */ }
+                catch { }
             }
         }
 
-        // Creation-path fallback: ensure preserved files exist after extraction/flatten by using build outputs.
-        // - web.config is REQUIRED; if still missing, throw.
-        // - config.json is considered required per your latest notes ("this file will always exist"), so also throw if missing.
         private static void EnsurePreservedFromBuildOrFail(string newPath)
         {
             var dstWeb = Path.Combine(newPath, "web.config");
@@ -848,62 +876,38 @@ namespace TheTool
                 throw new FileNotFoundException($"Required app\\environments\\config.json not found in new build at: {dstCfg}");
         }
 
-        // Applies a build from the specified source directory to the target site directory, preserving certain files.
-        public static void ApplyBuild(string siteName, string buildSourceDir, bool isProd)
-        {
-            string baseWebRoot = AppPaths.SitesRoot;
-            string targetDir = Path.Combine(baseWebRoot, siteName);
+        //public static void ApplyBuild(string siteName, string buildSourceDir, bool isProd)
+        //{
 
-            if (!Directory.Exists(targetDir))
-                throw new DirectoryNotFoundException($"Site directory not found: {targetDir}");
+        //    string baseWebRoot = AppPaths.SitesRoot;
+        //    string targetDir = Path.Combine(baseWebRoot, siteName);
 
-            string buildType = isProd ? "PROD" : "EXT";
-            Console.WriteLine($"Applying {buildType} build to: {siteName}");
-            Console.WriteLine($"From: {buildSourceDir}");
+        //    if (!Directory.Exists(targetDir))
+        //        throw new DirectoryNotFoundException($"Site directory not found: {targetDir}");
 
-            UpdateClientDirectory(targetDir, buildSourceDir);
-        }
+        //    string buildType = isProd ? "PROD" : "EXT";
+        //    Console.WriteLine($"Applying {buildType} build to: {siteName}");
+        //    Console.WriteLine($"From: {buildSourceDir}");
 
-        // -----------------------------
-        // NEW: convenience getters for callers/IISManager
-        // -----------------------------
-        public static (string BasePath, string PrevPath, string NewPath) GetProductionPaths(
-            string state, string client, string prevFolder, string newFolder)
-        {
-            var basePath = ResolveProdBasePath(state, client);
-            return (
-                BasePath: basePath,
-                PrevPath: Path.Combine(basePath, prevFolder),
-                NewPath: Path.Combine(basePath, newFolder)
-            );
-        }
+        //    UpdateClientDirectory(targetDir, buildSourceDir);
+        //}
 
-        public static (string ExternalRoot, string CaseInfoSearchPath, string ESubpoenaPath, string DataAccessPath)
-            GetExternalRolePaths(string externalRoot)
-        {
-            return (
-                ExternalRoot: externalRoot,
-                CaseInfoSearchPath: Path.Combine(externalRoot, "CaseInfoSearch"),
-                ESubpoenaPath: Path.Combine(externalRoot, "eSubpoena"),
-                DataAccessPath: Path.Combine(externalRoot, "DataAccess")
-            );
-        }
+        //public static (string ExternalRoot, string CaseInfoSearchPath, string ESubpoenaPath, string DataAccessPath)
+        //    GetExternalRolePaths(string externalRoot)
+        //{
+        //    return (
+        //        ExternalRoot: externalRoot,
+        //        CaseInfoSearchPath: Path.Combine(externalRoot, "CaseInfoSearch"),
+        //        ESubpoenaPath: Path.Combine(externalRoot, "eSubpoena"),
+        //        DataAccessPath: Path.Combine(externalRoot, "DataAccess")
+        //    );
+        //}
 
-        // -----------------------------
-        // small path/helper utilities
-        // -----------------------------
         private static bool PathsEqual(string a, string b)
         {
             return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
         }
 
-        /// <summary>
-        /// Flattens a redundant wrapper folder inside appRoot:
-        /// - If a subfolder exists with the same name as appRoot, flatten it.
-        /// - Special-case: DataAccess & PBKDataAccess are treated as interchangeable wrappers;
-        ///   flatten whichever appears nested (e.g., ...\DataAccess\PBKDataAccess or ...\PBKDataAccess\DataAccess).
-        /// Preserved files already in appRoot are never overwritten.
-        /// </summary>
         private static void FlattenExtraLayer(string appRoot)
         {
             if (string.IsNullOrWhiteSpace(appRoot) || !Directory.Exists(appRoot))
@@ -912,15 +916,12 @@ namespace TheTool
             string appName = Path.GetFileName(
                 appRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
-            // Candidates to flatten:
             var candidates = new List<string>();
 
-            // 1) Same-name wrapper: ...\AppRoot\AppRoot
             var sameName = Path.Combine(appRoot, appName);
             if (Directory.Exists(sameName))
                 candidates.Add(sameName);
 
-            // 2) DataAccess/PBKDataAccess counterpart wrapper
             string? counterpart = appName.Equals("DataAccess", StringComparison.OrdinalIgnoreCase) ? "PBKDataAccess"
                                   : appName.Equals("PBKDataAccess", StringComparison.OrdinalIgnoreCase) ? "DataAccess"
                                   : null;
@@ -931,29 +932,25 @@ namespace TheTool
                     candidates.Add(cp);
             }
 
-            // If nothing obvious, nothing to do.
             if (candidates.Count == 0) return;
 
             foreach (var nested in candidates)
                 MergeUpNoOverwrite(nested, appRoot);
 
-            // Local: merge nested -> appRoot without overwriting, then best-effort delete wrapper
             static void MergeUpNoOverwrite(string nested, string appRoot)
             {
-                // Move/merge files
                 foreach (var srcFile in Directory.EnumerateFiles(nested, "*", SearchOption.AllDirectories))
                 {
                     string rel = Path.GetRelativePath(nested, srcFile);
                     string dst = Path.Combine(appRoot, rel);
                     Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
 
-                    if (File.Exists(dst)) continue; // never overwrite
+                    if (File.Exists(dst)) continue;
 
                     try { File.Move(srcFile, dst); }
-                    catch { try { File.Copy(srcFile, dst, overwrite: false); } catch { /* ignore */ } }
+                    catch { try { File.Copy(srcFile, dst, overwrite: false); } catch { } }
                 }
 
-                // Prune empty directories under the wrapper (deepest-first)
                 foreach (var dir in Directory.EnumerateDirectories(nested, "*", SearchOption.AllDirectories)
                                              .OrderByDescending(p => p.Length))
                 {
@@ -962,10 +959,9 @@ namespace TheTool
                         if (!Directory.EnumerateFileSystemEntries(dir).Any())
                             Directory.Delete(dir, false);
                     }
-                    catch { /* ignore */ }
+                    catch { }
                 }
 
-                // Remove wrapper if empty; else best-effort recursive delete
                 try
                 {
                     if (!Directory.EnumerateFileSystemEntries(nested).Any())
@@ -973,7 +969,7 @@ namespace TheTool
                     else
                         Directory.Delete(nested, true);
                 }
-                catch { /* ignore */ }
+                catch { }
             }
         }
     }

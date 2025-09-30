@@ -1,64 +1,113 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
+using System.Windows.Forms;
 
 namespace TheTool
 {
     public sealed class AppConfig
     {
+        public string? DeploymentFlavor { get; init; }
         public string? SitesRootPath { get; init; }
-        public string? SitesDrive { get; init; } // e.g., "F:"
+        public string? SitesDrive { get; init; }
+        public string? ValidatePath { get; init; }
+        public string? ValidateDrive { get; init; }
+        public string? InternalPath { get; init; }
+        public string? InternalDrive { get; init; }
+
+        public string GetSitesRootPath()
+        {
+            if (!string.IsNullOrWhiteSpace(SitesRootPath))
+                return Path.GetFullPath(SitesRootPath);
+
+            if (!string.IsNullOrWhiteSpace(SitesDrive))
+                return Path.GetFullPath(SitesDrive);
+
+            throw new InvalidOperationException("SitesRootPath or SitesDrive must be set in config.");
+        }
+
+        public string GetValidatePath()
+        {
+            if (!string.IsNullOrWhiteSpace(ValidatePath))
+                return Path.GetFullPath(ValidatePath);
+
+            if (!string.IsNullOrWhiteSpace(ValidateDrive))
+                return Path.GetFullPath(ValidateDrive);
+
+            throw new InvalidOperationException("ValidatePath or ValidateDrive must be set in config.");
+        }
+
+        public string GetInternalPath()
+        {
+            if (!string.IsNullOrWhiteSpace(InternalPath))
+                return Path.GetFullPath(InternalPath);
+
+            if (!string.IsNullOrWhiteSpace(InternalDrive))
+                return Path.GetFullPath(InternalDrive);
+
+            throw new InvalidOperationException("InternalPath or InternalDrive must be set in config.");
+        }
     }
 
     internal static class AppConfigManager
     {
         private const string FileName = "config.json";
-        private static readonly string ExeDir = AppContext.BaseDirectory;
-        private static readonly string ExeConfigPath = Path.Combine(ExeDir, FileName);
+        private static readonly string ExeConfigPath = Path.Combine(AppContext.BaseDirectory, FileName);
 
-        private static AppConfig _cfg;
+        private static AppConfig? _cfg;
 
         public static AppConfig Config => _cfg ??= Load();
 
-        public static string EnsureSitesRootOrThrow()
-        {
-            var cfg = Config;
-
-            string path = null;
-            if (!string.IsNullOrWhiteSpace(cfg?.SitesRootPath))
-                path = cfg.SitesRootPath;
-            else if (!string.IsNullOrWhiteSpace(cfg?.SitesDrive))
-                path = Path.Combine(cfg.SitesDrive, "inetpub", "wwwroot");
-
-            if (string.IsNullOrWhiteSpace(path))
-                throw new InvalidOperationException(
-                    $"Missing config. Add 'SitesRootPath' or 'SitesDrive' in {ExeConfigPath}");
-
-            // Normalize and validate
-            path = Path.GetFullPath(path);
-            if (!Directory.Exists(path))
-                throw new DirectoryNotFoundException($"Sites root not found: {path}");
-
-            return path;
-        }
-
         private static AppConfig Load()
         {
-            if (!File.Exists(ExeConfigPath))
-                return new AppConfig(); // no defaults; forces explicit config
-
-            var json = File.ReadAllText(ExeConfigPath);
-            var opts = new JsonSerializerOptions
+            try
             {
-                ReadCommentHandling = JsonCommentHandling.Skip,
-                AllowTrailingCommas = true
-            };
-            return JsonSerializer.Deserialize<AppConfig>(json, opts) ?? new AppConfig();
+                if (!File.Exists(ExeConfigPath))
+                    throw new FileNotFoundException($"Config file not found: {ExeConfigPath}");
+
+                var json = File.ReadAllText(ExeConfigPath);
+                var opts = new JsonSerializerOptions
+                {
+                    ReadCommentHandling = JsonCommentHandling.Skip,
+                    AllowTrailingCommas = true,
+                    PropertyNameCaseInsensitive = true
+                };
+
+                var cfg = JsonSerializer.Deserialize<AppConfig>(json, opts) ?? new AppConfig();
+
+                ValidateDeploymentFlavor(cfg.DeploymentFlavor);
+
+                return cfg;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error loading config.json:\n{ex.Message}",
+                    "Config Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Environment.Exit(1);
+                return new AppConfig(); // unreachable
+            }
+        }
+
+        private static void ValidateDeploymentFlavor(string? flavor)
+        {
+            var validFlavors = new[] { "prod", "test", "internal" };
+            if (string.IsNullOrWhiteSpace(flavor) || !validFlavors.Contains(flavor.Trim().ToLowerInvariant()))
+            {
+                MessageBox.Show(
+                    $"Invalid DeploymentFlavor: '{flavor}'. Must be 'prod', 'test', or 'internal'.\nThe program will now exit.",
+                    "Configuration Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+                Environment.Exit(1);
+            }
         }
     }
 
-    internal static class AppPaths
-    {
-        public static string SitesRoot => AppConfigManager.EnsureSitesRootOrThrow();
-    }
+    //internal static class AppPaths
+    //{
+    //    public static string SitesRoot => AppConfigManager.Config.GetSitesRootPath();
+    //    public static string ValidateRoot => AppConfigManager.Config.GetValidatePath();
+    //    public static string InternalRoot => AppConfigManager.Config.GetInternalPath();
+    //}
 }

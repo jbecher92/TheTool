@@ -60,64 +60,64 @@ namespace TheTool
         /// Ensure a top-level IIS Site exists with a root app ("/") mapped to physicalPath and bound via binding (e.g. "*:80:" or "*:80:host").
         /// Also assigns its root application to the given app pool.
         /// </summary>
-        public static void EnsureSite(string siteName, string appPoolName, string physicalPath, string binding)
-        {
-            if (string.IsNullOrWhiteSpace(siteName)) throw new ArgumentException("siteName required");
-            if (string.IsNullOrWhiteSpace(appPoolName)) throw new ArgumentException("appPoolName required");
-            if (string.IsNullOrWhiteSpace(physicalPath)) throw new ArgumentException("physicalPath required");
-            if (string.IsNullOrWhiteSpace(binding)) throw new ArgumentException("binding required");
+        //public static void EnsureSite(string siteName, string appPoolName, string physicalPath, string binding)
+        //{
+        //    if (string.IsNullOrWhiteSpace(siteName)) throw new ArgumentException("siteName required");
+        //    if (string.IsNullOrWhiteSpace(appPoolName)) throw new ArgumentException("appPoolName required");
+        //    if (string.IsNullOrWhiteSpace(physicalPath)) throw new ArgumentException("physicalPath required");
+        //    if (string.IsNullOrWhiteSpace(binding)) throw new ArgumentException("binding required");
 
-            Directory.CreateDirectory(physicalPath);
+        //    Directory.CreateDirectory(physicalPath);
 
-            using var sm = new ServerManager();
+        //    using var sm = new ServerManager();
 
-            var site = sm.Sites[siteName];
-            if (site == null)
-            {
-                site = sm.Sites.Add(siteName, "http", binding, physicalPath);
-            }
-            else
-            {
-                // Update mapping/path
-                var rootApp = site.Applications["/"] ?? site.Applications.Add("/", physicalPath);
-                rootApp.VirtualDirectories["/"].PhysicalPath = physicalPath;
+        //    var site = sm.Sites[siteName];
+        //    if (site == null)
+        //    {
+        //        site = sm.Sites.Add(siteName, "http", binding, physicalPath);
+        //    }
+        //    else
+        //    {
+        //        // Update mapping/path
+        //        var rootApp = site.Applications["/"] ?? site.Applications.Add("/", physicalPath);
+        //        rootApp.VirtualDirectories["/"].PhysicalPath = physicalPath;
 
-                // Normalize bindings to single HTTP binding provided
-                site.Bindings.Clear();
-                site.Bindings.Add(binding, "http");
-            }
+        //        // Normalize bindings to single HTTP binding provided
+        //        site.Bindings.Clear();
+        //        site.Bindings.Add(binding, "http");
+        //    }
 
-            // Root app → app pool
-            site.Applications["/"].ApplicationPoolName = appPoolName;
+        //    // Root app → app pool
+        //    site.Applications["/"].ApplicationPoolName = appPoolName;
 
-            sm.CommitChanges();
-        }
+        //    sm.CommitChanges();
+        //}
 
         /// <summary>
         /// Ensure a child application exists under an existing site.
         /// appPath must start with '/', e.g. "/CaseInfoSearch".
         /// </summary>
-        public static void EnsureApp(string siteName, string appPath, string physicalPath, string appPoolName)
-        {
-            if (string.IsNullOrWhiteSpace(siteName)) throw new ArgumentException("siteName required");
-            if (string.IsNullOrWhiteSpace(appPath) || !appPath.StartsWith("/"))
-                throw new ArgumentException("appPath must start with '/'", nameof(appPath));
-            if (string.IsNullOrWhiteSpace(physicalPath)) throw new ArgumentException("physicalPath required");
-            if (string.IsNullOrWhiteSpace(appPoolName)) throw new ArgumentException("appPoolName required");
+        //public static void EnsureApp(string siteName, string appPath, string physicalPath, string appPoolName)
+        //{
+        //    if (string.IsNullOrWhiteSpace(siteName)) throw new ArgumentException("siteName required");
+        //    if (string.IsNullOrWhiteSpace(appPath) || !appPath.StartsWith("/"))
+        //        throw new ArgumentException("appPath must start with '/'", nameof(appPath));
+        //    if (string.IsNullOrWhiteSpace(physicalPath)) throw new ArgumentException("physicalPath required");
+        //    if (string.IsNullOrWhiteSpace(appPoolName)) throw new ArgumentException("appPoolName required");
 
-            Directory.CreateDirectory(physicalPath);
+        //    Directory.CreateDirectory(physicalPath);
 
-            using var sm = new ServerManager();
-            var site = sm.Sites[siteName] ?? throw new InvalidOperationException($"Site '{siteName}' not found.");
+        //    using var sm = new ServerManager();
+        //    var site = sm.Sites[siteName] ?? throw new InvalidOperationException($"Site '{siteName}' not found.");
 
-            var app = site.Applications[appPath] ?? site.Applications.Add(appPath, physicalPath);
-            app.ApplicationPoolName = appPoolName;
+        //    var app = site.Applications[appPath] ?? site.Applications.Add(appPath, physicalPath);
+        //    app.ApplicationPoolName = appPoolName;
 
-            // Ensure vdir points correctly
-            app.VirtualDirectories["/"].PhysicalPath = physicalPath;
+        //    // Ensure vdir points correctly
+        //    app.VirtualDirectories["/"].PhysicalPath = physicalPath;
 
-            sm.CommitChanges();
-        }
+        //    sm.CommitChanges();
+        //}
 
         // ---------------------------
         // Back-compat convenience: Default Web Site mapping
@@ -175,27 +175,27 @@ namespace TheTool
         // Pool state helpers
         // ---------------------------
 
-        public static void EnsurePoolStopped(string poolName, int timeoutMs = 60000)
-        {
-            using var sm = new ServerManager();
-            var pool = sm.ApplicationPools.FirstOrDefault(p => p.Name.Equals(poolName, StringComparison.OrdinalIgnoreCase));
-            if (pool == null) return;
-            if (pool.State == ObjectState.Stopped || pool.State == ObjectState.Stopping) return;
+        //public static void EnsurePoolStopped(string poolName, int timeoutMs = 60000)
+        //{
+        //    using var sm = new ServerManager();
+        //    var pool = sm.ApplicationPools.FirstOrDefault(p => p.Name.Equals(poolName, StringComparison.OrdinalIgnoreCase));
+        //    if (pool == null) return;
+        //    if (pool.State == ObjectState.Stopped || pool.State == ObjectState.Stopping) return;
 
-            pool.Stop(); sm.CommitChanges();
-            WaitForPoolState(sm, pool.Name, ObjectState.Stopped, timeoutMs);
-        }
+        //    pool.Stop(); sm.CommitChanges();
+        //    WaitForPoolState(sm, pool.Name, ObjectState.Stopped, timeoutMs);
+        //}
 
-        public static void EnsurePoolStarted(string poolName, int timeoutMs = 60000)
-        {
-            using var sm = new ServerManager();
-            var pool = sm.ApplicationPools.FirstOrDefault(p => p.Name.Equals(poolName, StringComparison.OrdinalIgnoreCase));
-            if (pool == null) return;
-            if (pool.State == ObjectState.Started || pool.State == ObjectState.Starting) return;
+        //public static void EnsurePoolStarted(string poolName, int timeoutMs = 60000)
+        //{
+        //    using var sm = new ServerManager();
+        //    var pool = sm.ApplicationPools.FirstOrDefault(p => p.Name.Equals(poolName, StringComparison.OrdinalIgnoreCase));
+        //    if (pool == null) return;
+        //    if (pool.State == ObjectState.Started || pool.State == ObjectState.Starting) return;
 
-            pool.Start(); sm.CommitChanges();
-            WaitForPoolState(sm, pool.Name, ObjectState.Started, timeoutMs);
-        }
+        //    pool.Start(); sm.CommitChanges();
+        //    WaitForPoolState(sm, pool.Name, ObjectState.Started, timeoutMs);
+        //}
 
         private static void WaitForPoolState(ServerManager sm, string poolName, ObjectState desired, int timeoutMs)
         {
@@ -223,9 +223,6 @@ namespace TheTool
             throw new TimeoutException($"App pool '{poolName}' did not reach state {desired} within {timeoutMs} ms.");
         }
 
-        // ---------------------------
-        // Batch stop → do work → start
-        // ---------------------------
 
         public static async Task RunWithPoolsStoppedAsync(
             string[] poolNames,

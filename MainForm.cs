@@ -12,18 +12,6 @@ namespace TheTool
 {
     public partial class MainForm : Form
     {
-        // Config model used by MainForm only (reads config.json)
-        private class AppConfig
-        {
-            public string DeploymentFlavor { get; set; } = "prod";
-            public string SitesRootPath { get; set; } = @"F:\inetpub\wwwroot";
-            public string SitesDrive { get; set; } = "F:";
-            public string ValidatePath { get; set; } = @"G:\inetpub\wwwroot";
-            public string ValidateDrive { get; set; } = "G:";
-            public string InternalPath { get; set; } = @"C:\inetpub\wwwroot";
-            public string InternalDrive { get; set; } = "C:";
-        }
-
         private readonly AppConfig appConfig;
 
         // Where to find config.json relative to exe; change if you store it somewhere else
@@ -76,8 +64,6 @@ namespace TheTool
             return cfg;
         }
 
-
-
         private void BtnBrowseProd_Click(object sender, EventArgs e)
         {
             string selected = OpenZipFile();
@@ -128,32 +114,16 @@ namespace TheTool
 
                 try
                 {
-                    // Dispatch to the correct function based on config.DeploymentFlavor
                     var flavor = (appConfig.DeploymentFlavor ?? "prod").Trim().ToLowerInvariant();
 
-                    switch (flavor)
-                    {
-                        case "internal":
-                            await deploy_Internal(finalSelections, prodZip, eapZip, esubZip, dataAccessZip,
-                                                  isCreate: false, log: log, confirmCtx: confirmForm,
-                                                  internalRoot: appConfig.InternalPath);
-                            break;
-
-                        case "test":
-                            await deploy_Test(finalSelections, prodZip, eapZip, esubZip, dataAccessZip,
-                                              isCreate: false, log: log, confirmCtx: confirmForm,
-                                              validateRoot: appConfig.ValidatePath);
-                            break;
-
-                        case "prod":
-                        default:
-                            // Production uses the canonical RunDeploymentAsync (unchanged)
-                            await RunDeploymentAsync(finalSelections, prodZip, eapZip, esubZip, dataAccessZip,
-                                                     isCreate: false, log: log, confirmCtx: confirmForm);
-                            break;
-                    }
-
-                    // If abort was requested, we exited at a safe checkpoint.
+                    // Resolve once (Option-1) and pass down
+                    string resolvedRoot = NormalizeRoot(
+                        ResolveRootPath(appConfig.DeploymentFlavor, appConfig.SitesRootPath));
+                        
+                    await RunDeploymentAsync(finalSelections, prodZip, eapZip, esubZip, dataAccessZip,
+                                                     isCreate: false, log: log, confirmCtx: confirmForm,
+                                                     resolvedRoot: resolvedRoot);
+                            
                     confirmForm.MarkComplete(confirmForm.IsAbortRequested
                         ? "All updates completed (before the abort)."
                         : "All updates completed.");
@@ -168,9 +138,12 @@ namespace TheTool
             confirmForm.Show(this);
         }
 
-        private async void btnSiteCreator_Click_1(object sender, EventArgs e)
+
+
+        private async void BtnSiteCreator_Click_1(object sender, EventArgs e)
         {
-            using var creatorForm = new SiteCreatorForm();
+            // Gather inputs from the site creator dialog
+            using var creatorForm = new SiteCreatorForm(appConfig);
             if (creatorForm.ShowDialog() != DialogResult.OK) return;
 
             string state = (creatorForm.State ?? "").Trim().ToUpperInvariant();
@@ -179,7 +152,6 @@ namespace TheTool
             bool makeProd = creatorForm.CreateProd;
             bool makeEAP = creatorForm.CreateEAP;
             bool makeESub = creatorForm.CreateESub;
-            bool makeDA = (makeEAP || makeESub);   // DA implied by externals
 
             if (string.IsNullOrWhiteSpace(state) || string.IsNullOrWhiteSpace(client))
             {
@@ -187,195 +159,92 @@ namespace TheTool
                 return;
             }
 
-            //Make sure site doesn't already exist
-            var confirmedSites = new List<(string SiteName, bool Prod, bool EAP, bool eSub)> { (state + client, makeProd, makeEAP, makeESub) };
+            // Config validation
+            if (string.IsNullOrWhiteSpace(appConfig?.SitesRootPath))
+                throw new InvalidOperationException("SitesRootPath is not defined in config.json");
+            if (string.IsNullOrWhiteSpace(appConfig?.DeploymentFlavor))
+                throw new InvalidOperationException("DeploymentFlavor is not defined in config.json");
 
-            // Read zips at confirm time
+            // Option-1: resolve root once here
+            string resolvedRoot = NormalizeRoot(
+                ResolveRootPath(appConfig.DeploymentFlavor, appConfig.SitesRootPath));
+
+            // Build the single-site plan we’ll pass to the deployer
+            var confirmedSites = new List<(string SiteName, bool Prod, bool EAP, bool eSub)>
+    {
+        (state + client, makeProd, makeEAP, makeESub)
+    };
+
+            // Zips picked in the main window
             string prodZip = txtProdPath.Text;
             string eapZip = txtEapPath.Text;
             string esubZip = txtESubPath.Text;
             string dataAccessZip = txtDataAccessPath.Text;
 
-            // Build preview
-            string siteName = state + client;
-            string tag = TodayTag();
+            // Preview/confirm form (builds its own preview; no disk I/O)
+            using var confirm = new SiteCreationConfirmationForm(
+                resolvedRoot: resolvedRoot,
+                state: state,
+                client: client,
+                createProd: makeProd,
+                createEAP: makeEAP,
+                createESub: makeESub);
 
-            // Use production SitesRootPath for previewing external path (consistent with deployment)
-            string prodRoot = (appConfig?.SitesRootPath ?? @"F:\inetpub\wwwroot");
-            string prodNew = Path.Combine(FileManager.ResolveProdBasePath(state, client), tag);
-            string externalRoot = ResolveExternalRootPreviewUsingRoot(state, client, prodRoot);
-
-            var preview = new List<(string Label, string Path)>();
-            if (makeProd)
-                preview.Add(($"{siteName}", prodNew));
-            if (makeEAP)
-                preview.Add(($"{siteName}CaseInfoSearch", Path.Combine(externalRoot, "CaseInfoSearch")));
-            if (makeESub)
-                preview.Add(($"{siteName}eSubpoena", Path.Combine(externalRoot, "eSubpoena")));
-
-            // ⬇️ Always show DataAccess when implied
-            if (makeDA)
+            // When the user clicks Confirm inside the dialog, it switches to "in progress"
+            // and fires this event. We run the creation and then mark complete.
+            confirm.CreateConfirmed += async () =>
             {
-                string daFolder = Directory.Exists(Path.Combine(externalRoot, "PBKDataAccess"))
-                    ? "PBKDataAccess" : "DataAccess";
-                preview.Add(($"{siteName}{daFolder}", Path.Combine(externalRoot, daFolder)));
-            }
-
-            using var confirm = new SiteCreationConfirmationForm(preview);
-            if (confirm.ShowDialog() != DialogResult.OK) return;
-
-            try
-            {
-                // For creation, we must also respect the configured flavor.
-                // If config is non-prod (test/internal) we route using the wrappers which will *disable externals*.
-                var flavor = (appConfig.DeploymentFlavor ?? "prod").Trim().ToLowerInvariant();
-
-                switch (flavor)
+                try
                 {
-                    case "internal":
-                        await deploy_Internal(confirmedSites, prodZip, eapZip, esubZip, dataAccessZip,
-                                              isCreate: true, log: null, confirmCtx: null, internalRoot: appConfig.InternalPath);
-                        break;
+                    await RunDeploymentAsync(
+                        confirmedSites,
+                        prodZip, eapZip, esubZip, dataAccessZip,
+                        isCreate: true,
+                        log: null,            // no streaming to the dialog
+                        confirmCtx: null,     // not using the update ConfirmationForm
+                        resolvedRoot: resolvedRoot);
 
-                    case "test":
-                        await deploy_Test(confirmedSites, prodZip, eapZip, esubZip, dataAccessZip,
-                                          isCreate: true, log: null, confirmCtx: null, validateRoot: appConfig.ValidatePath);
-                        break;
-
-                    case "prod":
-                    default:
-                        await RunDeploymentAsync(confirmedSites, prodZip, eapZip, esubZip, dataAccessZip,
-                                                 isCreate: true, log: null, confirmCtx: null);
-                        break;
+                    confirm.MarkComplete("Site creation complete.");
                 }
-
-                MessageBox.Show("Site creation complete.", "Success",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Create failed: " + ex.Message, "Error",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-            finally
-            {
-                // Refresh IIS list to show the new site(s)
-                RefreshIisListQuietly(state + client);
-            }
-        }
-
-        // -----------------------------
-        // Non-prod wrappers for RunDeploymentAsync
-        // -----------------------------
-        private async Task deploy_Test(
-            List<(string SiteName, bool Prod, bool EAP, bool eSub)> confirmedSites,
-            string prodZip,
-            string eapZip,
-            string esubZip,
-            string dataAccessZip,
-            bool isCreate,
-            Action<string>? log,
-            ConfirmationForm? confirmCtx,
-            string validateRoot)   // <-- pass this in (e.g. appConfig.ValidatePath)
-        {
-            if (confirmedSites == null) throw new ArgumentNullException(nameof(confirmedSites));
-
-            // 1) sanitize: never run externals for test/validate
-            var sanitized = confirmedSites
-                .Select(s => (SiteName: s.SiteName, Prod: s.Prod, EAP: false, eSub: false))
-                .ToList();
-
-            // 2) set ProdBasePathOverride to route to ValidatePath
-            var originalOverride = FileManager.ProdBasePathOverride;
-            try
-            {
-                var validateRootTrimmed = (validateRoot ?? "").Trim();
-                if (string.IsNullOrWhiteSpace(validateRootTrimmed))
-                    throw new InvalidOperationException("ValidatePath not provided to deploy_Test.");
-
-                FileManager.ProdBasePathOverride = (state, client) =>
+                catch (Exception ex)
                 {
-                    var s = (state ?? "").Trim().ToUpperInvariant();
-                    var c = (client ?? "").Trim();
-                    if (s.Length == 0) throw new ArgumentException("state required", nameof(state));
-                    if (c.Length == 0) throw new ArgumentException("client required", nameof(client));
-                    // flattened: {ValidatePath}\{STATE}{CLIENT}
-                    return Path.Combine(validateRootTrimmed, s + c);
-                };
-
-                // 3) call central deployment (it will use ResolveProdBasePath which now routes to ValidatePath)
-                await RunDeploymentAsync(sanitized, prodZip, eapZip, esubZip, dataAccessZip, isCreate, log, confirmCtx);
-            }
-            finally
-            {
-                // restore original behavior
-                FileManager.ProdBasePathOverride = originalOverride;
-            }
-        }
-
-        private async Task deploy_Internal(
-            List<(string SiteName, bool Prod, bool EAP, bool eSub)> confirmedSites,
-            string prodZip,
-            string eapZip,
-            string esubZip,
-            string dataAccessZip,
-            bool isCreate,
-            Action<string>? log,
-            ConfirmationForm? confirmCtx,
-            string internalRoot)   // <-- pass this in (e.g. appConfig.InternalPath)
-        {
-            if (confirmedSites == null) throw new ArgumentNullException(nameof(confirmedSites));
-
-            // sanitize: disable externals
-            var sanitized = confirmedSites
-                .Select(s => (SiteName: s.SiteName, Prod: s.Prod, EAP: false, eSub: false))
-                .ToList();
-
-            var originalOverride = FileManager.ProdBasePathOverride;
-            try
-            {
-                var internalRootTrimmed = (internalRoot ?? "").Trim();
-                if (string.IsNullOrWhiteSpace(internalRootTrimmed))
-                    throw new InvalidOperationException("InternalPath not provided to deploy_Internal.");
-
-                FileManager.ProdBasePathOverride = (state, client) =>
+                    confirm.MarkComplete("Failed: " + ex.Message);
+                }
+                finally
                 {
-                    var s = (state ?? "").Trim().ToUpperInvariant();
-                    var c = (client ?? "").Trim();
-                    if (s.Length == 0) throw new ArgumentException("state required", nameof(state));
-                    if (c.Length == 0) throw new ArgumentException("client required", nameof(client));
-                    // flattened: {InternalPath}\{STATE}{CLIENT}
-                    return Path.Combine(internalRootTrimmed, s + c);
-                };
+                    RefreshIisListQuietly(state + client);
+                }
+            };
 
-                await RunDeploymentAsync(sanitized, prodZip, eapZip, esubZip, dataAccessZip, isCreate, log, confirmCtx);
-            }
-            finally
-            {
-                FileManager.ProdBasePathOverride = originalOverride;
-            }
+            // Show modal; user sees preview first. On Confirm, the same window shows "Creation in progress..."
+            confirm.ShowDialog(this);
         }
+
+
 
 
         private async Task RunDeploymentAsync(
-            List<(string SiteName, bool Prod, bool EAP, bool eSub)> confirmedSites,
-            string prodZip,
-            string eapZip,
-            string esubZip,
-            string dataAccessZip,
-            bool isCreate,
-            Action<string>? log,
-            ConfirmationForm? confirmCtx = null) // ⬅️ optional: creation path stays unchanged
+    List<(string SiteName, bool Prod, bool EAP, bool eSub)> confirmedSites,
+    string prodZip,
+    string eapZip,
+    string esubZip,
+    string dataAccessZip,
+    bool isCreate,
+    Action<string>? log,
+    ConfirmationForm? confirmCtx,
+    string resolvedRoot) // REQUIRED, passed by caller per Option-1
         {
-            // Central validation (enforces DA when EAP/eSub selected)
             if (!ValidateZipSelections(confirmedSites, prodZip, eapZip, esubZip, dataAccessZip))
                 throw new InvalidOperationException("Validation failed.");
 
+            if (string.IsNullOrWhiteSpace(resolvedRoot))
+                throw new InvalidOperationException("resolvedRoot must be provided (Option-1 rule).");
+
             string tag = TodayTag();
 
-            // Build plans + affected pools
             var sitePlans = new List<(string SiteName, string State, string Client, bool DoProd, bool DoEap, bool DoESub)>();
             var poolsAffected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var externalRootCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var (siteName, prod, eap, esub) in confirmedSites)
             {
@@ -406,105 +275,100 @@ namespace TheTool
                 return;
             }
 
-            // ---- bootstrap directories on CREATE only ----
+            // CREATE: bootstrap dirs
             if (isCreate)
             {
                 foreach (var plan in sitePlans)
                 {
                     if (plan.DoProd)
                     {
-                        string prodBase = FileManager.ResolveProdBasePath(plan.State, plan.Client);
+                        string prodBase = FileManager.ResolveProdBasePath(resolvedRoot, plan.State, plan.Client);
                         Directory.CreateDirectory(Path.Combine(prodBase, tag));
                     }
 
                     if (plan.DoEap || plan.DoESub)
                     {
-                        string extRoot = ResolveExternalRoot(plan.State, plan.Client);
-                        Directory.CreateDirectory(extRoot);
+                        string externalRoot = FileManager.ResolveExternalRoot(plan.State, plan.Client, AppConfigManager.Config.DeploymentFlavor, resolvedRoot, externalRootCache);
+                        Directory.CreateDirectory(externalRoot);
 
-                        if (plan.DoEap) Directory.CreateDirectory(Path.Combine(extRoot, "CaseInfoSearch"));
-                        if (plan.DoESub) Directory.CreateDirectory(Path.Combine(extRoot, "eSubpoena"));
+                        if (plan.DoEap) Directory.CreateDirectory(Path.Combine(externalRoot, "CaseInfoSearch"));
+                        if (plan.DoESub) Directory.CreateDirectory(Path.Combine(externalRoot, "eSubpoena"));
 
-                        string daFolder = Directory.Exists(Path.Combine(extRoot, "PBKDataAccess")) ? "PBKDataAccess" : "DataAccess";
-                        Directory.CreateDirectory(Path.Combine(extRoot, daFolder));
+                        string daFolder = Directory.Exists(Path.Combine(externalRoot, "PBKDataAccess")) ? "PBKDataAccess" : "DataAccess";
+                        Directory.CreateDirectory(Path.Combine(externalRoot, daFolder));
                     }
                 }
             }
-            // ------------------------------------------------
 
-            // The file work to perform (wrapped by pool stop/start for Update)
+            // WORK
             Func<Task> work = async () =>
             {
-                bool exitNow = false;
-
-                for (int i = 0; i < sitePlans.Count; i++)
+                foreach (var plan in sitePlans)
                 {
-                    var plan = sitePlans[i];
-
-                    // If Abort was pressed between clients, honor it now.
                     if (confirmCtx?.IsAbortRequested == true)
                     {
                         log?.Invoke("Abort requested. Skipping remaining sites before starting next client.");
                         break;
                     }
 
-                    // -------------------- PROD PHASE --------------------
-                    if (plan.DoProd)
+                    try
                     {
-                        confirmCtx?.EnterProdPhase(plan.SiteName);
-                        log?.Invoke($"{plan.SiteName}: Updating Production.");
-
-                        await Task.Run(() =>
+                        if (plan.DoProd)
                         {
-                            string basePath = FileManager.ResolveProdBasePath(plan.State, plan.Client);
-                            string prevFolder = isCreate ? string.Empty : (FindLatestVersionFolder(basePath) ?? string.Empty);
+                            confirmCtx?.EnterProdPhase(plan.SiteName);
+                            log?.Invoke($"{plan.SiteName}: Updating Production.");
 
-                            FileManager.DeployProduction_Update(
-                                plan.State, plan.Client, prevFolder, tag, prodZip, onProgress: null);
-                        });
+                            await Task.Run(() =>
+                            {
+                                string prodBasePath = FileManager.ResolveProdBasePath(resolvedRoot, plan.State, plan.Client);
+                                string prevFolder = isCreate ? string.Empty : (FindLatestVersionFolder(prodBasePath) ?? string.Empty);
 
-                        confirmCtx?.LeavePhase();
+                                FileManager.DeployProduction_Update(
+                                    plan.State, plan.Client, resolvedRoot, prevFolder, tag, prodZip, onProgress: log);
+                            });
 
-                        // Abort during Prod: finish Prod (done), then skip this client's externals and the rest.
-                        if (confirmCtx?.ShouldSkipExternalsFor(plan.SiteName) == true)
+                            confirmCtx?.LeavePhase();
+
+                            if (confirmCtx?.ShouldSkipExternalsFor(plan.SiteName) == true)
+                            {
+                                log?.Invoke($"Aborting {plan.SiteName} Production. Skipping externals and all remaining clients.");
+                                break;
+                            }
+                        }
+
+                        if (plan.DoEap || plan.DoESub)
                         {
-                            log?.Invoke($"Aborting {plan.SiteName} Production. Skipping externals and all remaining clients.");
-                            exitNow = true;
-                            break;
+                            confirmCtx?.EnterExternalsPhase(plan.SiteName);
+                            log?.Invoke($"{plan.SiteName}: Initiating External Updates");
+
+                            await Task.Run(() =>
+                            {
+                                string externalRoot = FileManager.ResolveExternalRoot(plan.State, plan.Client, AppConfigManager.Config.DeploymentFlavor, resolvedRoot, externalRootCache);
+                                string? cisZip = plan.DoEap ? eapZip : null;
+                                string? esZip = plan.DoESub ? esubZip : null;
+
+                                FileManager.DeployExternal_Update(
+                                    resolvedRoot, plan.State, plan.Client, tag,
+                                    cisZip, esZip, dataAccessZip,
+                                    onProgress: log);
+
+                            });
+
+                            confirmCtx?.LeavePhase();
+
+                            if (confirmCtx?.ShouldStopAfterExternals(plan.SiteName) == true)
+                            {
+                                log?.Invoke($"Aborting {plan.SiteName} Externals. Skipping remaining clients.");
+                                break;
+                            }
                         }
                     }
-
-                    // ----------------- EXTERNALS PHASE -----------------
-                    if (plan.DoEap || plan.DoESub)
+                    catch (Exception ex)
                     {
-                        confirmCtx?.EnterExternalsPhase(plan.SiteName);
-                        log?.Invoke($"{plan.SiteName}: Initiating External Updates");
-
-                        await Task.Run(() =>
-                        {
-                            string externalRoot = ResolveExternalRoot(plan.State, plan.Client);
-                            string? cisZip = plan.DoEap ? eapZip : null;
-                            string? esZip = plan.DoESub ? esubZip : null;
-
-                            FileManager.DeployExternal_Update(
-                                plan.State, plan.Client, externalRoot, tag,
-                                cisZip, esZip, dataAccessZip,
-                                onProgress: null);
-                        });
-
-                        confirmCtx?.LeavePhase();
-
-                        // Abort during Externals: finish externals (done), then stop processing further clients.
-                        if (confirmCtx?.ShouldStopAfterExternals(plan.SiteName) == true)
-                        {
-                            log?.Invoke($"Aborting {plan.SiteName} Externals. Skipping remaining clients.");
-                            exitNow = true;
-                            break;
-                        }
+                        log?.Invoke($"Error deploying {plan.SiteName}: {ex.Message}");
                     }
                 }
 
-                // Update-only: clear ASP.NET temp after file ops (kept as-is)
                 if (!isCreate)
                 {
                     var tempTargets = poolsAffected
@@ -513,31 +377,30 @@ namespace TheTool
                         .ToArray();
 
                     if (tempTargets.Length > 0)
-                        await TempCleaner.ClearForAppPoolsAsync(tempTargets, line => log?.Invoke(line), maxDegreeOfParallelism: 4);
+                        await TempCleaner.ClearForAppPoolsAsync(tempTargets, log, maxDegreeOfParallelism: 4);
                 }
             };
 
-            // Update: stop/start only pools we touch; Create: just run
             if (isCreate)
                 await work();
             else
                 await IISManager.RunWithPoolsStoppedAsync(poolsAffected.ToArray(), work, log);
 
-            // IIS mappings — same for both
+            // Final IIS binding phase
             foreach (var plan in sitePlans)
             {
                 if (plan.DoProd)
                 {
-                    string basePath = FileManager.ResolveProdBasePath(plan.State, plan.Client);
+                    string prodBasePath = FileManager.ResolveProdBasePath(resolvedRoot, plan.State, plan.Client);
                     IISManager.EnsureAppUnderDefault(
                         plan.State + plan.Client,
-                        Path.Combine(basePath, tag),
+                        Path.Combine(prodBasePath, tag),
                         plan.SiteName);
                 }
 
                 if (plan.DoEap)
                 {
-                    string externalRoot = ResolveExternalRoot(plan.State, plan.Client);
+                    string externalRoot = FileManager.ResolveExternalRoot(plan.State, plan.Client, AppConfigManager.Config.DeploymentFlavor, resolvedRoot, externalRootCache);
                     IISManager.EnsureAppUnderDefault(
                         plan.State + plan.Client + "CaseInfoSearch",
                         Path.Combine(externalRoot, "CaseInfoSearch"),
@@ -546,7 +409,7 @@ namespace TheTool
 
                 if (plan.DoESub)
                 {
-                    string externalRoot = ResolveExternalRoot(plan.State, plan.Client);
+                    string externalRoot = FileManager.ResolveExternalRoot(plan.State, plan.Client, AppConfigManager.Config.DeploymentFlavor, resolvedRoot, externalRootCache);
                     IISManager.EnsureAppUnderDefault(
                         plan.State + plan.Client + "eSubpoena",
                         Path.Combine(externalRoot, "eSubpoena"),
@@ -555,7 +418,7 @@ namespace TheTool
 
                 if (plan.DoEap || plan.DoESub)
                 {
-                    string externalRoot = ResolveExternalRoot(plan.State, plan.Client);
+                    string externalRoot = FileManager.ResolveExternalRoot(plan.State, plan.Client, AppConfigManager.Config.DeploymentFlavor, resolvedRoot, externalRootCache);
                     string daFolder = Directory.Exists(Path.Combine(externalRoot, "PBKDataAccess"))
                                       ? "PBKDataAccess" : "DataAccess";
 
@@ -566,6 +429,7 @@ namespace TheTool
                 }
             }
         }
+
 
         // Populate site selector panel with IIS app pools on load
         private void LoadAppPoolsIntoPanel()
@@ -613,50 +477,58 @@ namespace TheTool
             }
         }
 
-        private string ResolveExternalRoot(string state, string client)
+
+        //private string ResolveExternalRootPreviewUsingRoot(string state, string client, string root)
+        //{
+        //    if (string.IsNullOrWhiteSpace(state) || string.IsNullOrWhiteSpace(client))
+        //        throw new ArgumentException("State and client must be provided.");
+
+        //    string s = state.ToUpperInvariant();
+        //    string flavor = appConfig.DeploymentFlavor?.Trim().ToLowerInvariant() ?? "prod";
+        //    string basePath = flavor == "prod" ? Path.Combine(root, s) : root;
+
+        //    // Try to find any container with "external" in its name
+        //    string? container = null;
+        //    try
+        //    {
+        //        if (Directory.Exists(basePath))
+        //        {
+        //            container = Directory.GetDirectories(basePath, "*", SearchOption.TopDirectoryOnly)
+        //                .FirstOrDefault(d =>
+        //                    Path.GetFileName(d).IndexOf("external", StringComparison.OrdinalIgnoreCase) >= 0);
+        //        }
+        //    }
+        //    catch { }
+
+        //    if (string.IsNullOrEmpty(container))
+        //        container = Path.Combine(basePath, "PbkExternal");
+
+        //    return NormalizeRoot(Path.Combine(container, s + client));
+        //}
+
+
+        private static string NormalizeRoot(string root)
         {
-            // Use configured SitesRootPath (production root)
-            string wwwroot = appConfig.SitesRootPath;
-            string basePath = Path.Combine(wwwroot, state);
-            if (!Directory.Exists(basePath))
-                Directory.CreateDirectory(basePath);
+            if (root.Length == 2 && root[1] == ':')
+                root += Path.DirectorySeparatorChar;
+            return Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar);
+        }
 
-            // Find any folder whose name contains "external" (case-insensitive)
-            string? externalBase = Directory.GetDirectories(basePath)
-                .FirstOrDefault(d => d != null &&
-                                     d.Split(Path.DirectorySeparatorChar).Last()
-                                      .IndexOf("external", StringComparison.OrdinalIgnoreCase) >= 0);
+        private string ResolveRootPath(string? deploymentFlavor, string prodRoot)
+        {
+            deploymentFlavor = (deploymentFlavor ?? "").Trim().ToLowerInvariant();
 
-            if (string.IsNullOrEmpty(externalBase))
+            return deploymentFlavor switch
             {
-                externalBase = Path.Combine(basePath, "PbkExternal");
-                Directory.CreateDirectory(externalBase);
-            }
-
-            // Client root under the external folder: …\External*\{STATE}{CLIENT}
-            string clientRoot = Path.Combine(externalBase, state + client);
-            Directory.CreateDirectory(clientRoot);
-            return clientRoot;
+                "internal" => appConfig?.InternalPath?.Trim() ?? throw new InvalidOperationException("InternalPath not configured."),
+                "test" => appConfig?.ValidatePath?.Trim() ?? throw new InvalidOperationException("ValidatePath not configured."),
+                _ => prodRoot
+            };
         }
 
-        private static string ResolveExternalRootPreviewUsingRoot(string state, string client, string wwwroot)
-        {
-            // base and "preferred" external folder
-            string stateBase = Path.Combine(wwwroot, state);
-            string pbk = Path.Combine(stateBase, "PbkExternal");
 
-            // If the {STATE} folder doesn't exist yet, don't enumerate—just predict the final path.
-            if (!Directory.Exists(stateBase))
-                return Path.Combine(pbk, state + client);
 
-            // Now it's safe to enumerate inside {STATE}.
-            string externalBase = Directory.Exists(pbk)
-                ? pbk
-                : Directory.GetDirectories(stateBase, "*external*", SearchOption.TopDirectoryOnly)
-                           .FirstOrDefault() ?? pbk;
 
-            return Path.Combine(externalBase, state + client);
-        }
 
         // ===== File Helpers =====
 
@@ -671,7 +543,6 @@ namespace TheTool
                 return dialog.ShowDialog() == DialogResult.OK ? dialog.FileName : string.Empty;
             }
         }
-
 
         private bool ValidateZipSelections(
             List<(string SiteName, bool Prod, bool EAP, bool eSub)> confirmedSites,
@@ -731,6 +602,15 @@ namespace TheTool
 
         private static string TodayTag() => DateTime.Now.ToString("MMddyyyy");
 
+        private static string GuessDAFolderNameForPreview(string dataAccessZip)
+        {
+            var name = Path.GetFileName(dataAccessZip ?? "");
+            if (name.StartsWith("PBKDataAccess_", StringComparison.OrdinalIgnoreCase)) return "PBKDataAccess";
+            if (name.StartsWith("DataAccess_", StringComparison.OrdinalIgnoreCase)) return "DataAccess";
+            return "DataAccess";
+        }
+
+
         private static string FindLatestVersionFolder(string basePath)
         {
             if (!Directory.Exists(basePath)) return "";
@@ -740,12 +620,6 @@ namespace TheTool
                 .OrderByDescending(n => n)
                 .FirstOrDefault();
             return latest ?? "";
-        }
-
-        private static string ResolveExternalRootPreview(string state, string client)
-        {
-            // Deprecated: keep for backward compatibility. Prefer ResolveExternalRootPreviewUsingRoot + appConfig.SitesRootPath
-            return ResolveExternalRootPreviewUsingRoot(state, client, @"F:\inetpub\wwwroot");
         }
 
         private void RefreshIisListQuietly(string? highlightSite = null)

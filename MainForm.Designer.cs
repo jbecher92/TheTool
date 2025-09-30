@@ -179,7 +179,7 @@
             btnSiteCreator.Size = new Size(73, 27);
             btnSiteCreator.TabIndex = 13;
             btnSiteCreator.Text = "Create";
-            btnSiteCreator.Click += btnSiteCreator_Click_1;
+            btnSiteCreator.Click += BtnSiteCreator_Click_1;
             // 
             // MainForm
             // 
