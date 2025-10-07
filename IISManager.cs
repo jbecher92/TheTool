@@ -320,7 +320,7 @@ namespace TheTool
                 var roles = g.Select(RoleForPool)
                              .Distinct(StringComparer.OrdinalIgnoreCase)
                              .OrderBy(r => r);
-                log?.Invoke($"  {string.Join(", ", roles)}");
+                log?.Invoke($" -{string.Join(", ", roles)}");
             }
         }
     }

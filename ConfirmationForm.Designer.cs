@@ -97,6 +97,7 @@
             // 
             // btnAbort
             // 
+            btnAbort.Anchor = AnchorStyles.Bottom;
             btnAbort.Location = new Point(12, 318);
             btnAbort.Name = "btnAbort";
             btnAbort.Size = new Size(80, 30);

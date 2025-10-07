@@ -9,13 +9,9 @@ namespace TheTool
     public partial class ConfirmationForm : Form
     {
         public bool Confirmed { get; private set; } = false;
-
-        // Log UI (created programmatically so we don't touch your designer layout)
-        private Panel pnlLog;
-        private Label lblLogHeader;
-        private TextBox txtLog;
-
-        // === Cooperative abort state ===
+        private Panel pnlLog = null!;
+        private Label lblLogHeader = null!;
+        private TextBox txtLog = null!;
         private enum UpdatePhase { None, Prod, Externals }
         private enum AbortMode
         {
@@ -28,7 +24,7 @@ namespace TheTool
 
         private volatile bool _abortRequested;
         private AbortMode _abortMode = AbortMode.None;
-        private UpdatePhase _currentPhase = UpdatePhase.None;
+        private volatile UpdatePhase _currentPhase = UpdatePhase.None;
         private string _currentSite = string.Empty;
 
         // Raised when the user presses Confirm and we should start the update.
@@ -125,8 +121,7 @@ namespace TheTool
         private void btnAbort_Click(object sender, EventArgs e)
         {
             // Visible only in log view
-            btnAbort.Enabled = false; // debounce
-            _abortRequested = true;
+            btnAbort.Enabled = false;
 
             // Capture the intended abort mode based on where we are right now
             _abortMode = _currentPhase switch
@@ -135,7 +130,7 @@ namespace TheTool
                 UpdatePhase.Externals => AbortMode.SkipRestAfterCurrentExternals,
                 _ => AbortMode.SkipExternalsAndRestAfterCurrentProd // default to earliest safe boundary
             };
-
+            _abortRequested = true;
             AppendLog("Abort Requested. Completing current update.");
             AbortRequested?.Invoke();
         }

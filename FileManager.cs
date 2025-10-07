@@ -1,36 +1,16 @@
-﻿using System;
+﻿using Microsoft.VisualBasic.Logging;
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Collections.Generic;
 using System.Threading;
 
 namespace TheTool
 {
     public static class FileManager
     {
-       
-        //public static string ResolveRoot(string state, string client, string deploymentFlavor)
-        //{
-        //    string flavor = (deploymentFlavor ?? "prod").ToLowerInvariant();
-
-        //    string root = flavor switch
-        //    {
-        //        "internal" => AppConfigManager.Config.GetInternalPath(),
-        //        "test" => AppConfigManager.Config.GetValidatePath(),
-        //        _ => AppConfigManager.Config.GetSitesRootPath()
-        //    };
-
-        //    if (string.IsNullOrWhiteSpace(root))
-        //        throw new InvalidOperationException($"Root path not configured for '{flavor}'.");
-
-        //    return Path.GetFullPath(root);
-        //}
-
-        /// <summary>
-        /// PURE: Production base path under the resolvedRoot (no disk I/O).
-        /// </summary>
         public static string ResolveProdBasePath(string resolvedRoot, string state, string client)
         {
             if (string.IsNullOrWhiteSpace(resolvedRoot))
@@ -53,11 +33,6 @@ namespace TheTool
             return Path.GetFullPath(basePath);
         }
 
-
-
-        /// - prod:      {resolvedRoot}\{STATE}\PbkExternal\{STATE}{client}
-        /// - non-prod:  {resolvedRoot}\PbkExternal\{STATE}{client}
-        /// Note: Folder existence is NOT checked here; execution code can create/verify as needed.
         public static string ResolveExternalRoot(
             string state,
             string client,
@@ -75,14 +50,8 @@ namespace TheTool
             string s = state.Trim().ToUpperInvariant();
             string c = client.Trim();
             string flavor = (deploymentFlavor ?? "prod").Trim().ToLowerInvariant();
-
-            // prod → {root}\{STATE}\..., non-prod → {root}\...
-            string basePath = flavor == "prod"
-                ? Path.Combine(resolvedRoot, s)
-                : resolvedRoot;
-
-            // Pick the first folder whose name contains "external" (case-insensitive), else "PbkExternal".
-            string containerName = "PbkExternal";
+            string basePath = flavor == "prod" ? Path.Combine(resolvedRoot, s) : resolvedRoot;
+            string containerName = "PbkExternal"; //Default container name to fall back on
             try
             {
                 if (Directory.Exists(basePath))
@@ -92,23 +61,17 @@ namespace TheTool
                                          .FirstOrDefault(name =>
                                              !string.IsNullOrEmpty(name) &&
                                              name.IndexOf("external", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                    // Wildcard search, only override if something was actually found
                     if (!string.IsNullOrEmpty(match))
                         containerName = match;
                 }
             }
-            catch
-            {
-                // swallow read errors; fall back to PbkExternal
-            }
+            catch { /* ignore */}
 
             string clientRoot = Path.Combine(basePath, containerName, s + c);
             return Path.GetFullPath(clientRoot);
         }
-
-
-
-        private static readonly string[] PreserveFiles = { "web.config", "appsettings.json" };
-        //public static Func<string, string, string>? ProdBasePathOverride { get; set; }
 
         public static void DeployProduction_Update(
             string state,
@@ -120,6 +83,7 @@ namespace TheTool
             Action<string>? onProgress = null)
         {
             void Report(string m) { try { onProgress?.Invoke(m); } catch { } }
+            string siteTag = $"{state}{client}";
 
             if (string.IsNullOrWhiteSpace(state)) throw new ArgumentException("state required");
             if (string.IsNullOrWhiteSpace(client)) throw new ArgumentException("client required");
@@ -137,11 +101,20 @@ namespace TheTool
 
             EnsureDirExists(basePath);
 
-            // Always create the new dated folder (re-use if exists – supports same-day updates)
-            CreateSiteDirectory(newPath, Report);
+            // Always create the new dated folder 
+            Report($"{siteTag}: Updating Production - {newPath}");
+            CreateSiteDirectory(newPath);
 
             bool creationPath = string.IsNullOrWhiteSpace(prevFolder) || !Directory.Exists(prevPath);
             bool deferredPreserveFromBuild = false;
+
+            // Soft-note if previous lacked config.json 
+            if (!creationPath)
+            {
+                var prevCfg = Path.Combine(prevPath, @"app\environments\config.json");
+                if (!File.Exists(prevCfg))
+                    Report($"{siteTag}[Config]: Previous build missing app\\environments\\config.json");
+            }
 
             if (!creationPath)
             {
@@ -157,7 +130,14 @@ namespace TheTool
                 // 3) Clean temp (old) folder, keeping preserved files
                 DeleteAllInsideExcept(prevPath, ProdPreserveRelative);
 
-                // 4) Copy preserved files from temp into the new folder (safe if same-day; self-copy guarded)
+                var srcWeb = Path.Combine(prevPath, "web.config");
+                var srcCfg = Path.Combine(prevPath, @"app\environments\config.json");
+                if (!File.Exists(srcWeb))
+                    Report($"{siteTag}[Preserve]: web.config not found in previous build (continuing).");
+                if (!File.Exists(srcCfg))
+                    Report($"{siteTag}[Config]: Missing preserved file - {srcCfg}");
+
+                // 4) Copy preserved files from temp into the new folder 
                 CopyPreservedFiles(prevPath, newPath, ProdPreserveRelative);
             }
             else
@@ -179,7 +159,7 @@ namespace TheTool
             ExtractArchiveSkipOverwrite(dstZip, newPath);
             MergeFlattenTopFolderNoOverwrite(newPath);
 
-            // 6) Final preserved rules/validation
+            // 6) Final preserved rules/validation (soft for config.json, hard for web.config)
             if (!creationPath)
             {
                 // Ensure preserved files from temp are the final ones (self-copy guarded)
@@ -188,10 +168,15 @@ namespace TheTool
             else
             {
                 if (deferredPreserveFromBuild)
-                    EnsurePreservedFromBuildOrFail(newPath);
+                    EnsurePreservedFromBuildOrFail(newPath); // only hard-require web.config
                 else
                     ForceCopyPreservedFilesFromBase(basePath, newPath);
             }
+
+            // 6b) If config.json is still missing, try to seed ONLY that file from the prod archive (soft behavior)
+            var newCfg = Path.Combine(newPath, @"app\environments\config.json");
+            if (!File.Exists(newCfg))
+                TrySeedSingleConfigFromArchive(newBuildArchivePath, newPath, onProgress);
 
             // 7) Cleanup temp (old) folder and deployed zip
             if (!creationPath)
@@ -202,10 +187,10 @@ namespace TheTool
             // 8) Keep only the most recent backup zip
             CleanupBackupsKeepMostRecent(basePath, state, client);
 
-            Report($"{state}{client}: Production Update Complete.");
+            Report($"{siteTag}: Production Update Complete.");
         }
 
-        // -------- External controller (UPDATE) --------
+
         public static void DeployExternal_Update(
             string resolvedRoot,
             string state,
@@ -217,17 +202,17 @@ namespace TheTool
             Action<string>? onProgress = null)
         {
             void Report(string msg) { try { onProgress?.Invoke(msg); } catch { } }
+            string siteTag = $"{state}{client}";
 
             if (string.IsNullOrWhiteSpace(resolvedRoot)) throw new ArgumentException("resolvedRoot required");
             if (string.IsNullOrWhiteSpace(state)) throw new ArgumentException("state required");
             if (string.IsNullOrWhiteSpace(client)) throw new ArgumentException("client required");
             if (string.IsNullOrWhiteSpace(backupTag)) throw new ArgumentException("backupTag required");
 
-            // Option-1: Resolve deterministically (pure), then do any disk checks/creates here (execution phase).
-            // Default (pure) path based on config
-            string externalRoot = ResolveExternalRoot(state, client, AppConfigManager.Config.DeploymentFlavor, resolvedRoot);
+            //Resolve deterministically, then do any disk checks/creates here
+            string externalRoot = ResolveExternalRoot(state, client, AppConfigManager.Config.DeploymentFlavor ?? "prod", resolvedRoot);
 
-            // EXECUTION-TIME detection: choose the on-disk folder (PbkExternal vs ExternalSites)
+            // Choose the folder (PbkExternal vs ExternalSites)
             string s = state.ToUpperInvariant();
             string flavor = (AppConfigManager.Config.DeploymentFlavor ?? "prod").Trim().ToLowerInvariant();
             string basePath = flavor == "prod" ? Path.Combine(resolvedRoot, s) : resolvedRoot;
@@ -235,17 +220,26 @@ namespace TheTool
             string candidatePbk = Path.Combine(basePath, "PbkExternal", s + client);
             string candidateExt = Path.Combine(basePath, "ExternalSites", s + client);
 
-            // Prefer whichever exists
-            if (Directory.Exists(candidateExt))
-                externalRoot = candidateExt;
-            else if (Directory.Exists(candidatePbk))
-                externalRoot = candidatePbk;
-            else
-                throw new DirectoryNotFoundException(
-                    $"External root not found. Looked for:\n  {candidatePbk}\n  {candidateExt}");
+            // Locate an existing external base by wildcard
+            var externalBase = Directory.GetDirectories(basePath)
+                .FirstOrDefault(d => Path.GetFileName(d)
+                    .IndexOf("external", StringComparison.OrdinalIgnoreCase) >= 0);
 
+            if (externalBase == null)
+            {
+                Report($"{siteTag}[Skip]: No external base folder found under '{basePath}' for state '{s}'. ");
+                return; 
+            }
 
-            // Validate archives (execution-time)
+            // Require an existing subfolder for this client
+            externalRoot = Path.Combine(externalBase, s + client);
+            if (!Directory.Exists(externalRoot))
+            {
+                Report($"{siteTag}[Skip]: External root not found for '{s}{client}' under '{externalBase}'. ");
+                return;
+            }
+
+            // Validate archives 
             if (!string.IsNullOrWhiteSpace(caseInfoSearchZip)) ValidateBuildName(caseInfoSearchZip, "caseinfosearch");
             if (!string.IsNullOrWhiteSpace(esubpoenaZip)) ValidateBuildName(esubpoenaZip, "esubpoena");
             if (!string.IsNullOrWhiteSpace(dataAccessZip)) ValidateBuildName(dataAccessZip, "dataaccess");
@@ -274,23 +268,37 @@ namespace TheTool
             // --- Deploy roles ---
             DeployRoleIfProvided("CaseInfoSearch", caseInfoSearchZip, cisPath);
             DeployRoleIfProvided("eSubpoena", esubpoenaZip, esPath);
-            DeployRoleIfProvided(daFolder, dataAccessZip, daPath);
+            DeployRoleIfProvided(daFolder, dataAccessZip, daPath); 
 
             // Cleanup old backups
             KeepOnlyMostRecentBackup(externalRoot, backupTag, Report);
 
-            Report($"{state}{client}: External Update(s) Complete.");
+            Report($"{siteTag}: External Update(s) Complete.");
 
             // -------- Local helpers ----------
+
             void DeployRoleIfProvided(string roleDisplayName, string? archivePath, string rolePath)
             {
                 if (string.IsNullOrWhiteSpace(archivePath))
                     return;
 
+                if (!File.Exists(archivePath))
+                {
+                    Report($"{siteTag}: {roleDisplayName} — archive not found. Skipping.");
+                    return;
+                }
+
+                Report($"{siteTag}: Updating {roleDisplayName}- {rolePath}");
+
+                // Record whether previous role folder had config.json
+                var prevCfg = Path.Combine(rolePath, @"app\environments\config.json");
+                if (RequiresAppEnvironmentsConfig(roleDisplayName) && !File.Exists(prevCfg))
+                    Report($"{siteTag}[Config]:  Previous build missing app\\environments\\config.json for {roleDisplayName}.");
+
                 var ext = Path.GetExtension(archivePath).ToLowerInvariant();
                 if (ext != ".zip" && ext != ".7z")
                 {
-                    Report($"{roleDisplayName}: skipping — archive must be .zip or .7z");
+                    Report($"{siteTag}{roleDisplayName}[Skip]: archive must be .zip or .7z");
                     return;
                 }
 
@@ -298,15 +306,27 @@ namespace TheTool
                 DeleteAllInsideExcept(rolePath, ExternalPreserveRelative);
 
                 var dstArchive = Path.Combine(rolePath, Path.GetFileName(archivePath));
-                File.Copy(archivePath, dstArchive, overwrite: true);
+                try
+                {
+                    File.Copy(archivePath, dstArchive, overwrite: true);
+                }
+                catch (Exception ex)
+                {
+                    Report($"{siteTag}{roleDisplayName}[Skip]: failed to stage archive: {ex.Message}.");
+                    return;
+                }
 
                 ExtractArchiveSkipOverwrite(dstArchive, rolePath);
                 FlattenExtraLayer(rolePath);
 
                 try { if (File.Exists(dstArchive)) File.Delete(dstArchive); } catch { }
 
-                //Report($"{roleDisplayName}: done.");
+                // If still missing, try to seed ONLY config.json from this role's archive 
+                var newCfg = Path.Combine(rolePath, @"app\environments\config.json");
+                if (RequiresAppEnvironmentsConfig(roleDisplayName) && !File.Exists(newCfg))
+                    TrySeedSingleConfigFromArchive(archivePath, rolePath, onProgress);
             }
+
 
             static void TryBackupFolder(string sourceDir, string archivePath, Action<string> log)
             {
@@ -315,13 +335,90 @@ namespace TheTool
 
                 Directory.CreateDirectory(Path.GetDirectoryName(archivePath)!);
                 CreateZipArchive(sourceDir, archivePath);
-                //log($"[Backup] {archivePath}");
             }
         }
 
         // =====================================================================
-        // I/O UTILITIES (execution-time only)
+        //                              I/O UTILITIES
         // =====================================================================
+
+        private static bool TrySeedSingleConfigFromArchive(string archivePath, string destRoot, Action<string>? log)
+        {
+            const string relConfig = @"app\environments\config.json";
+            var outPath = Path.Combine(destRoot, relConfig);
+
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+
+                var ext = Path.GetExtension(archivePath).ToLowerInvariant();
+                if (ext == ".zip")
+                {
+                    using var archive = ZipFile.OpenRead(archivePath);
+
+                    // Find ANY entry whose normalized path ends with app/environments/config.json
+                    string suffix = "app/environments/config.json";
+                    var entry = archive.Entries.FirstOrDefault(e =>
+                        e != null &&
+                        !string.IsNullOrEmpty(e.FullName) &&
+                        e.FullName.Replace('\\', '/').EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+
+                    if (entry == null)
+                    {
+                        log?.Invoke("[Config] Build did not contain app\\environments\\config.json.");
+                        return false;
+                    }
+
+                    entry.ExtractToFile(outPath, overwrite: true);
+                    log?.Invoke("[Config] Seeded app\\environments\\config.json from build.");
+                    return true;
+                }
+
+                if (ext == ".7z")
+                {
+                    var sevenZipExe = Find7zExe();
+                    if (sevenZipExe == null)
+                    {
+                        log?.Invoke("[Config] 7z.exe not found; cannot seed app\\environments\\config.json.");
+                        return false;
+                    }
+
+                    // Use recursive mask so it matches in nested PBK/DBK wrappers:
+                    //   -r : recurse
+                    //   -aos: skip overwrite of existing 
+                    //   mask: *\app\environments\config.json
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = sevenZipExe,
+                        Arguments = $"x \"{archivePath}\" -o\"{destRoot}\" -y -aos -r \"*\\app\\environments\\config.json\"",
+                        UseShellExecute = false,
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    };
+
+                    using var p = Process.Start(psi)!;
+                    p.WaitForExit();
+
+                    if (p.ExitCode == 0 && File.Exists(outPath))
+                    {
+                        log?.Invoke("[Config] Seeded app\\environments\\config.json from build.");
+                        return true;
+                    }
+
+                    log?.Invoke("[Config] Build did not contain app\\environments\\config.json.");
+                    return false;
+                }
+
+                log?.Invoke("[Config] Unsupported archive type for seeding.");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"[Config] Failed to seed app\\environments\\config.json: {ex.Message}");
+                return false;
+            }
+        }
 
         private static string MakeUniqueTempFolder(string parent, string baseName)
         {
@@ -355,7 +452,7 @@ namespace TheTool
                     Directory.CreateDirectory(destDir);
 
                     if (File.Exists(destPath))
-                        continue; // preserve existing (e.g., web.config, config.json)
+                        continue; 
 
                     entry.ExtractToFile(destPath, overwrite: false);
                 }
@@ -392,7 +489,6 @@ namespace TheTool
 
         private static string? Find7zExe()
         {
-            // 1) PATH
             try
             {
                 var path = Environment.GetEnvironmentVariable("PATH");
@@ -411,7 +507,6 @@ namespace TheTool
             }
             catch { /* ignore */ }
 
-            // 2) Common installs
             string[] guesses =
             {
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),    "7-Zip", "7z.exe"),
@@ -423,31 +518,11 @@ namespace TheTool
             return null;
         }
 
-        public static void UpdateClientDirectory(string targetDir, string newBuildSourceDir)
-        {
-            if (!Directory.Exists(targetDir))
-                throw new DirectoryNotFoundException($"Target directory not found: {targetDir}");
-
-            if (!Directory.Exists(newBuildSourceDir))
-                throw new DirectoryNotFoundException($"Build source not found: {newBuildSourceDir}");
-
-            string archivePath = Path.Combine(targetDir, $"backup_{DateTime.Now:yyyyMMdd_HHmmss}.zip");
-
-            CreateZipArchive(targetDir, archivePath);
-            CleanDirectoryExceptConfig(targetDir);
-            CopyNewBuildFiles(newBuildSourceDir, targetDir);
-        }
-
-        public static void CreateSiteDirectory(string path, Action<string>? onProgress = null)
+        public static void CreateSiteDirectory(string path)
         {
             if (!Directory.Exists(path))
             {
                 Directory.CreateDirectory(path);
-                onProgress?.Invoke($"DNE, Created directory and Updating: {path}");
-            }
-            else
-            {
-                //onProgress?.Invoke($"Updating: {path}");
             }
         }
 
@@ -506,39 +581,11 @@ namespace TheTool
                 try
                 {
                     di.Delete(true);
-                    log?.Invoke($"[Backup] Purged older backup: {di.FullName}");
                 }
                 catch (Exception ex)
                 {
                     log?.Invoke($"[Backup] Failed to purge '{di.FullName}': {ex.Message}");
                 }
-            }
-        }
-
-        private static void CleanDirectoryExceptConfig(string dir)
-        {
-            foreach (string file in Directory.GetFiles(dir))
-            {
-                string fileName = Path.GetFileName(file);
-                if (!PreserveFiles.Contains(fileName, StringComparer.OrdinalIgnoreCase))
-                    File.Delete(file);
-            }
-
-            foreach (string subDir in Directory.GetDirectories(dir))
-            {
-                if (IsProtectedDir(subDir)) continue;
-                Directory.Delete(subDir, true);
-            }
-        }
-
-        private static void CopyNewBuildFiles(string sourceDir, string destDir)
-        {
-            foreach (string filePath in Directory.GetFiles(sourceDir, "*", SearchOption.AllDirectories))
-            {
-                string relativePath = Path.GetRelativePath(sourceDir, filePath);
-                string destPath = Path.Combine(destDir, relativePath);
-                Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
-                File.Copy(filePath, destPath, overwrite: true);
             }
         }
 
@@ -623,12 +670,15 @@ namespace TheTool
             {
                 try
                 {
-                    if (File.Exists(src))
+                    // If the source vanished (e.g., temp path), log and skip this preserve copy
+                    if (!File.Exists(src))
                     {
-                        var sattr = File.GetAttributes(src);
-                        if ((sattr & FileAttributes.ReadOnly) != 0)
-                            File.SetAttributes(src, sattr & ~FileAttributes.ReadOnly);
+                        return;
                     }
+
+                    var sattr = File.GetAttributes(src);
+                    if ((sattr & FileAttributes.ReadOnly) != 0)
+                        File.SetAttributes(src, sattr & ~FileAttributes.ReadOnly);
 
                     File.Copy(src, dst, overwrite: false);
                     return;
@@ -643,8 +693,30 @@ namespace TheTool
                     Thread.Sleep(delayMs);
                     TryDeleteDst();
                 }
+                // Non-retryable / not worth retrying: log and continue overall deployment
+                catch (FileNotFoundException)
+                {
+                    return;
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    return;
+                }
+                catch (PathTooLongException)
+                {
+                    return;
+                }
             }
-            File.Copy(src, dst, overwrite: false);
+
+            // Final attempt after retries — do not crash the run
+            try
+            {
+                File.Copy(src, dst, overwrite: false);
+            }
+            catch (Exception)
+            {
+            }
+
         }
 
         private static void DeleteAllInsideExcept(string root, IEnumerable<string> relKeep)
@@ -701,8 +773,6 @@ namespace TheTool
             try { Directory.Delete(path, recursive: true); } catch { }
         }
 
-        //public static void SafeDeleteDirectory(string path) => TryDeleteDirRecursive(path);
-
         private static string MakeProdBackupZipPath(string basePath, string state, string client, string prevFolder)
         {
             return Path.Combine(basePath, $"{state}{client}_{prevFolder}.zip");
@@ -736,18 +806,6 @@ namespace TheTool
             }
             return false;
         }
-
-        //private static bool VerifyProductionDeployment(string newPath)
-        //{
-        //    try
-        //    {
-        //        if (!Directory.Exists(newPath)) return false;
-        //        var webConfig = Path.Combine(newPath, "web.config");
-        //        if (!File.Exists(webConfig)) return false;
-        //        return HasNonPreservedFiles(newPath);
-        //    }
-        //    catch { return false; }
-        //}
 
         private static void CleanupBackupsKeepMostRecent(string basePath, string state, string client)
         {
@@ -804,9 +862,29 @@ namespace TheTool
         private static void CopyOverwriteSkipSelf(string src, string dst)
         {
             if (PathsEqual(src, dst)) return;
-            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-            File.Copy(src, dst, overwrite: true);
+
+            try
+            {
+                string? dir = Path.GetDirectoryName(dst);
+                if (!string.IsNullOrEmpty(dir))
+                    Directory.CreateDirectory(dir);
+
+                // If the source doesn't exist (or its directory doesn't), silently skip.
+                if (!File.Exists(src))
+                    return;
+
+                File.Copy(src, dst, overwrite: true);
+            }
+            catch (FileNotFoundException)
+            {
+                
+            }
+            catch (DirectoryNotFoundException)
+            {
+                
+            }
         }
+
 
         private static bool IsProtectedDir(string path)
         {
@@ -871,37 +949,8 @@ namespace TheTool
             if (!File.Exists(dstWeb))
                 throw new FileNotFoundException($"Required web.config not found in new build at: {dstWeb}");
 
-            var dstCfg = Path.Combine(newPath, @"app\environments\config.json");
-            if (!File.Exists(dstCfg))
-                throw new FileNotFoundException($"Required app\\environments\\config.json not found in new build at: {dstCfg}");
+            // app\environments\config.json is soft: do not throw if missing.
         }
-
-        //public static void ApplyBuild(string siteName, string buildSourceDir, bool isProd)
-        //{
-
-        //    string baseWebRoot = AppPaths.SitesRoot;
-        //    string targetDir = Path.Combine(baseWebRoot, siteName);
-
-        //    if (!Directory.Exists(targetDir))
-        //        throw new DirectoryNotFoundException($"Site directory not found: {targetDir}");
-
-        //    string buildType = isProd ? "PROD" : "EXT";
-        //    Console.WriteLine($"Applying {buildType} build to: {siteName}");
-        //    Console.WriteLine($"From: {buildSourceDir}");
-
-        //    UpdateClientDirectory(targetDir, buildSourceDir);
-        //}
-
-        //public static (string ExternalRoot, string CaseInfoSearchPath, string ESubpoenaPath, string DataAccessPath)
-        //    GetExternalRolePaths(string externalRoot)
-        //{
-        //    return (
-        //        ExternalRoot: externalRoot,
-        //        CaseInfoSearchPath: Path.Combine(externalRoot, "CaseInfoSearch"),
-        //        ESubpoenaPath: Path.Combine(externalRoot, "eSubpoena"),
-        //        DataAccessPath: Path.Combine(externalRoot, "DataAccess")
-        //    );
-        //}
 
         private static bool PathsEqual(string a, string b)
         {
@@ -972,5 +1021,85 @@ namespace TheTool
                 catch { }
             }
         }
+
+        private static bool RequiresAppEnvironmentsConfig(string appFolderName)
+        {
+            // Only EAP/CaseInfoSearch and eSubpoena require app\environments\config.json
+            return appFolderName.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)
+                || appFolderName.Equals("eSubpoena", StringComparison.OrdinalIgnoreCase);
+        }
+
+
+        //private static bool TrySeedSingleConfigFromArchive(string archivePath, string destRoot, Action<string>? log)
+        //{
+        //    const string relConfig = @"app\environments\config.json";
+        //    var outPath = Path.Combine(destRoot, relConfig);
+
+        //    try
+        //    {
+        //        Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
+
+        //        var ext = Path.GetExtension(archivePath).ToLowerInvariant();
+        //        if (ext == ".zip")
+        //        {
+        //            using var archive = ZipFile.OpenRead(archivePath);
+        //            // Normalize both sides to forward slashes for comparison
+        //            string want = "app/environments/config.json";
+        //            var entry = archive.Entries.FirstOrDefault(e =>
+        //                string.Equals(e.FullName.Replace('\\', '/'), want, StringComparison.OrdinalIgnoreCase));
+
+        //            if (entry == null)
+        //            {
+        //                log?.Invoke("[Config] Build did not contain app\\environments\\config.json.");
+        //                return false;
+        //            }
+
+        //            entry.ExtractToFile(outPath, overwrite: true);
+        //            log?.Invoke("[Config] Seeded app\\environments\\config.json from build.");
+        //            return true;
+        //        }
+
+        //        if (ext == ".7z")
+        //        {
+        //            var sevenZipExe = Find7zExe();
+        //            if (sevenZipExe == null)
+        //            {
+        //                log?.Invoke("[Config] 7z.exe not found; cannot seed app\\environments\\config.json.");
+        //                return false;
+        //            }
+
+        //            // Extract just the one file, skipping overwrites elsewhere (-aos).
+        //            var psi = new ProcessStartInfo
+        //            {
+        //                FileName = sevenZipExe,
+        //                Arguments = $"x \"{archivePath}\" -o\"{destRoot}\" -y -aos \"{relConfig}\"",
+        //                UseShellExecute = false,
+        //                CreateNoWindow = true,
+        //                RedirectStandardOutput = true,
+        //                RedirectStandardError = true
+        //            };
+
+        //            using var p = Process.Start(psi)!;
+        //            p.WaitForExit();
+
+        //            if (p.ExitCode == 0 && File.Exists(outPath))
+        //            {
+        //                log?.Invoke("[Config] Seeded app\\environments\\config.json from build.");
+        //                return true;
+        //            }
+
+        //            log?.Invoke("[Config] Build did not contain app\\environments\\config.json.");
+        //            return false;
+        //        }
+
+        //        log?.Invoke("[Config] Unsupported archive type for seeding.");
+        //        return false;
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        log?.Invoke($"[Config] Failed to seed app\\environments\\config.json: {ex.Message}");
+        //        return false;
+        //    }
+        //}
     }
 }

@@ -66,7 +66,7 @@ public static class TempCleaner
             {
                 log?.Invoke($"[ASP.NET Temp64] (Attempt {attempt}) Access: {uaEx.Message}");
             }
-            Thread.Sleep(300); // tiny backoff for lingering locks
+            Thread.Sleep(300); 
         }
 
         // last resort: force-empty then delete once more

@@ -12,131 +12,125 @@
         private System.Windows.Forms.CheckBox chkESubpoena;
         //private System.Windows.Forms.CheckBox chkDataAccess;
         private System.Windows.Forms.Button btnCreate;
-        private System.Windows.Forms.TextBox txtPreview;
-        private System.Windows.Forms.Label lblPreview;
         private System.Windows.Forms.PictureBox picStateValidation;
 
         private void InitializeComponent()
         {
-            this.lblState = new System.Windows.Forms.Label();
-            this.txtState = new System.Windows.Forms.TextBox();
-            this.lblClient = new System.Windows.Forms.Label();
-            this.txtClient = new System.Windows.Forms.TextBox();
-            this.chkProduction = new System.Windows.Forms.CheckBox();
-            this.chkCaseInfoSearch = new System.Windows.Forms.CheckBox();
-            this.chkESubpoena = new System.Windows.Forms.CheckBox();
-            //this.chkDataAccess = new System.Windows.Forms.CheckBox();
-            this.btnCreate = new System.Windows.Forms.Button();
-            this.txtPreview = new System.Windows.Forms.TextBox();
-            this.lblPreview = new System.Windows.Forms.Label();
-            this.picStateValidation = new System.Windows.Forms.PictureBox();
-            ((System.ComponentModel.ISupportInitialize)(this.picStateValidation)).BeginInit();
-            this.SuspendLayout();
-
+            lblState = new Label();
+            txtState = new TextBox();
+            lblClient = new Label();
+            txtClient = new TextBox();
+            chkProduction = new CheckBox();
+            chkCaseInfoSearch = new CheckBox();
+            chkESubpoena = new CheckBox();
+            btnCreate = new Button();
+            picStateValidation = new PictureBox();
+            ((System.ComponentModel.ISupportInitialize)picStateValidation).BeginInit();
+            SuspendLayout();
+            // 
             // lblState
-            this.lblState.AutoSize = true;
-            this.lblState.Location = new System.Drawing.Point(12, 15);
-            this.lblState.Name = "lblState";
-            this.lblState.Size = new System.Drawing.Size(48, 25);
-            this.lblState.Text = "State";
-
+            // 
+            lblState.AutoSize = true;
+            lblState.Location = new Point(10, 12);
+            lblState.Margin = new Padding(2, 0, 2, 0);
+            lblState.Name = "lblState";
+            lblState.Size = new Size(43, 20);
+            lblState.TabIndex = 1;
+            lblState.Text = "State";
+            // 
             // txtState
-            this.txtState.Location = new System.Drawing.Point(70, 12);
-            this.txtState.Name = "txtState";
-            this.txtState.Size = new System.Drawing.Size(50, 31);
-            this.txtState.TextChanged += (_, __) => ValidateInputs(updateUiOnly: true);
-
-            // picStateValidation
-            this.picStateValidation.Location = new System.Drawing.Point(130, 15);
-            this.picStateValidation.Size = new System.Drawing.Size(24, 24);
-            this.picStateValidation.SizeMode = System.Windows.Forms.PictureBoxSizeMode.StretchImage;
-            this.picStateValidation.TabStop = false;
-            this.Controls.Add(this.picStateValidation);
-
+            // 
+            txtState.Location = new Point(56, 10);
+            txtState.Margin = new Padding(2, 2, 2, 2);
+            txtState.Name = "txtState";
+            txtState.Size = new Size(41, 27);
+            txtState.TabIndex = 2;
+            // 
             // lblClient
-            this.lblClient.AutoSize = true;
-            this.lblClient.Location = new System.Drawing.Point(170, 15);
-            this.lblClient.Name = "lblClient";
-            this.lblClient.Size = new System.Drawing.Size(56, 25);
-            this.lblClient.Text = "Client";
-
+            // 
+            lblClient.AutoSize = true;
+            lblClient.Location = new Point(136, 12);
+            lblClient.Margin = new Padding(2, 0, 2, 0);
+            lblClient.Name = "lblClient";
+            lblClient.Size = new Size(47, 20);
+            lblClient.TabIndex = 3;
+            lblClient.Text = "Client";
+            // 
             // txtClient
-            this.txtClient.Location = new System.Drawing.Point(230, 12);
-            this.txtClient.Name = "txtClient";
-            this.txtClient.Size = new System.Drawing.Size(332, 31);
-            this.txtClient.TextChanged += (_, __) => ValidateInputs(updateUiOnly: true);
-
+            // 
+            txtClient.Location = new Point(184, 10);
+            txtClient.Margin = new Padding(2, 2, 2, 2);
+            txtClient.Name = "txtClient";
+            txtClient.Size = new Size(266, 27);
+            txtClient.TabIndex = 4;
+            // 
             // chkProduction
-            this.chkProduction.Location = new System.Drawing.Point(12, 72);
-            this.chkProduction.Name = "chkProduction";
-            this.chkProduction.Size = new System.Drawing.Size(126, 30);
-            this.chkProduction.Text = "Default Site";
-            this.chkProduction.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
-
+            // 
+            chkProduction.Location = new Point(22, 76);
+            chkProduction.Margin = new Padding(2, 2, 2, 2);
+            chkProduction.Name = "chkProduction";
+            chkProduction.Size = new Size(101, 24);
+            chkProduction.TabIndex = 5;
+            chkProduction.Text = "Default Site";
+            // 
             // chkCaseInfoSearch
-            this.chkCaseInfoSearch.Location = new System.Drawing.Point(144, 72);
-            this.chkCaseInfoSearch.Name = "chkCaseInfoSearch";
-            this.chkCaseInfoSearch.Size = new System.Drawing.Size(170, 30);
-            this.chkCaseInfoSearch.Text = "CaseInfoSearch";
-            this.chkCaseInfoSearch.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
-
+            // 
+            chkCaseInfoSearch.Location = new Point(184, 76);
+            chkCaseInfoSearch.Margin = new Padding(2, 2, 2, 2);
+            chkCaseInfoSearch.Name = "chkCaseInfoSearch";
+            chkCaseInfoSearch.Size = new Size(136, 24);
+            chkCaseInfoSearch.TabIndex = 6;
+            chkCaseInfoSearch.Text = "CaseInfoSearch";
+            // 
             // chkESubpoena
-            this.chkESubpoena.Location = new System.Drawing.Point(320, 72);
-            this.chkESubpoena.Name = "chkESubpoena";
-            this.chkESubpoena.Size = new System.Drawing.Size(160, 30);
-            this.chkESubpoena.Text = "eSubpoena";
-            this.chkESubpoena.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
-
-            // chkDataAccess
-            //this.chkDataAccess.Location = new System.Drawing.Point(446, 72);
-            //this.chkDataAccess.Name = "chkDataAccess";
-            //this.chkDataAccess.Size = new System.Drawing.Size(140, 30);
-            //this.chkDataAccess.Text = "DataAccess";
-            //this.chkDataAccess.CheckedChanged += (_, __) => ValidateInputs(updateUiOnly: true);
-
-
+            // 
+            chkESubpoena.Location = new Point(391, 76);
+            chkESubpoena.Margin = new Padding(2, 2, 2, 2);
+            chkESubpoena.Name = "chkESubpoena";
+            chkESubpoena.Size = new Size(128, 24);
+            chkESubpoena.TabIndex = 7;
+            chkESubpoena.Text = "eSubpoena";
+            // 
             // btnCreate
-            this.btnCreate.Location = new System.Drawing.Point(733, 412);
-            this.btnCreate.Name = "btnCreate";
-            this.btnCreate.Size = new System.Drawing.Size(100, 40);
-            this.btnCreate.Text = "Create";
-            this.btnCreate.Click += new System.EventHandler(this.btnCreate_Click);
-
-            // lblPreview
-            this.lblPreview.AutoSize = true;
-            this.lblPreview.Location = new System.Drawing.Point(12, 105);
-            this.lblPreview.Name = "lblPreview";
-            this.lblPreview.Size = new System.Drawing.Size(70, 25);
-            this.lblPreview.Text = "Preview";
-
-            // txtPreview
-            this.txtPreview.Location = new System.Drawing.Point(12, 135);
-            this.txtPreview.Multiline = true;
-            this.txtPreview.Name = "txtPreview";
-            this.txtPreview.ScrollBars = System.Windows.Forms.ScrollBars.Vertical;
-            this.txtPreview.ReadOnly = true;
-            this.txtPreview.Size = new System.Drawing.Size(821, 260);
-
+            // 
+            btnCreate.Location = new Point(586, 330);
+            btnCreate.Margin = new Padding(2, 2, 2, 2);
+            btnCreate.Name = "btnCreate";
+            btnCreate.Size = new Size(80, 32);
+            btnCreate.TabIndex = 8;
+            btnCreate.Text = "Create";
+            btnCreate.Click += btnCreate_Click;
+            // 
+            // picStateValidation
+            // 
+            picStateValidation.Location = new Point(104, 12);
+            picStateValidation.Margin = new Padding(2, 2, 2, 2);
+            picStateValidation.Name = "picStateValidation";
+            picStateValidation.Size = new Size(19, 19);
+            picStateValidation.SizeMode = PictureBoxSizeMode.StretchImage;
+            picStateValidation.TabIndex = 0;
+            picStateValidation.TabStop = false;
+            // 
             // SiteCreatorForm
-            this.AutoScaleDimensions = new System.Drawing.SizeF(10F, 25F);
-            this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(845, 464);
-            this.Controls.Add(this.lblState);
-            this.Controls.Add(this.txtState);
-            this.Controls.Add(this.lblClient);
-            this.Controls.Add(this.txtClient);
-            this.Controls.Add(this.chkProduction);
-            this.Controls.Add(this.chkCaseInfoSearch);
-            this.Controls.Add(this.chkESubpoena);
-            //this.Controls.Add(this.chkDataAccess);
-            this.Controls.Add(this.btnCreate);
-            this.Controls.Add(this.lblPreview);
-            this.Controls.Add(this.txtPreview);
-            this.Name = "SiteCreatorForm";
-            this.Text = "Site Creator";
-            ((System.ComponentModel.ISupportInitialize)(this.picStateValidation)).EndInit();
-            this.ResumeLayout(false);
-            this.PerformLayout();
+            // 
+            AutoScaleDimensions = new SizeF(8F, 20F);
+            AutoScaleMode = AutoScaleMode.Font;
+            ClientSize = new Size(676, 371);
+            Controls.Add(picStateValidation);
+            Controls.Add(lblState);
+            Controls.Add(txtState);
+            Controls.Add(lblClient);
+            Controls.Add(txtClient);
+            Controls.Add(chkProduction);
+            Controls.Add(chkCaseInfoSearch);
+            Controls.Add(chkESubpoena);
+            Controls.Add(btnCreate);
+            Margin = new Padding(2, 2, 2, 2);
+            Name = "SiteCreatorForm";
+            Text = "Site Creator";
+            ((System.ComponentModel.ISupportInitialize)picStateValidation).EndInit();
+            ResumeLayout(false);
+            PerformLayout();
         }
 
         protected override void Dispose(bool disposing)

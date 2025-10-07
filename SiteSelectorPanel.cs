@@ -45,19 +45,60 @@ namespace TheTool
 
             foreach (DataGridViewRow row in dgvSites.Rows)
             {
-                bool parentChecked = Convert.ToBoolean(row.Cells["colSelected"].Value ?? false);
+                if (row.IsNewRow) continue; // avoid placeholder row
+
+                bool parentChecked = ToBool(row, "colSelected");
                 if (!parentChecked) continue;
 
-                string siteName = row.Cells["colSiteName"].Value?.ToString() ?? string.Empty;
-                bool prod = Convert.ToBoolean(row.Cells["colProd"].Value ?? false);
-                bool ext = Convert.ToBoolean(row.Cells["colExt"].Value ?? false);
-                bool esub = Convert.ToBoolean(row.Cells["colESub"].Value ?? false);
+                string siteName = row.Cells["colSiteName"]?.Value?.ToString() ?? string.Empty;
+                bool prod = ToBool(row, "colProd");
 
-                selected.Add((siteName, prod, ext, esub));
+                // Prefer the dedicated EAP column if it exists; otherwise fall back to legacy "colExt"
+                bool eap = dgvSites.Columns.Contains("colEAP")
+                    ? ToBool(row, "colEAP")
+                    : ToBool(row, "colExt");
+
+                bool esub = ToBool(row, "colESub");
+
+                selected.Add((siteName, prod, eap, esub));
             }
 
             return selected;
+
+            // --- local helpers ---
+            static bool ToBool(DataGridViewRow r, string colName)
+            {
+                object? v = null;
+                try { v = r.Cells[colName]?.Value; } catch { }
+                return v switch
+                {
+                    bool b => b,
+                    CheckState cs => cs == CheckState.Checked,
+                    _ => Convert.ToBoolean(v ?? false)
+                };
+            }
+
         }
+
+        //public List<(string SiteName, bool Prod, bool EAP, bool eSub)> GetSelectedSites()
+        //{
+        //    var selected = new List<(string SiteName, bool Prod, bool EAP, bool eSub)>();
+
+        //    foreach (DataGridViewRow row in dgvSites.Rows)
+        //    {
+        //        bool parentChecked = Convert.ToBoolean(row.Cells["colSelected"].Value ?? false);
+        //        if (!parentChecked) continue;
+
+        //        string siteName = row.Cells["colSiteName"].Value?.ToString() ?? string.Empty;
+        //        bool prod = Convert.ToBoolean(row.Cells["colProd"].Value ?? false);
+        //        bool ext = Convert.ToBoolean(row.Cells["colExt"].Value ?? false);
+        //        bool esub = Convert.ToBoolean(row.Cells["colESub"].Value ?? false);
+
+        //        selected.Add((siteName, prod, ext, esub));
+        //    }
+
+        //    return selected;
+        //}
 
         /// Filters the grid rows based on the text input.
         private void TxtFilter_TextChanged(object sender, EventArgs e)
@@ -72,7 +113,7 @@ namespace TheTool
         }
 
         // When any cell value changes, handle parent/children syncing.
-        private void dgvSites_CellValueChanged(object sender, DataGridViewCellEventArgs e)
+        private void dgvSites_CellValueChanged(object? sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
             if (_suppressCascade) return;
@@ -118,6 +159,18 @@ namespace TheTool
             }
         }
 
+        public void ClearSelections()
+        {
+            foreach (DataGridViewRow row in dgvSites.Rows)
+            {
+                row.Cells["colProd"].Value = false;
+                row.Cells["colEAP"].Value = false;
+                row.Cells["colESub"].Value = false;
+            }
+
+            dgvSites.ClearSelection();
+        }
+
         private void dgvSites_CurrentCellDirtyStateChanged(object sender, EventArgs e)
         {
             if (dgvSites.IsCurrentCellDirty)
@@ -127,7 +180,7 @@ namespace TheTool
         }
 
         // checkbox/build validation for child role columns
-        private void dgvSites_CellContentClick(object sender, DataGridViewCellEventArgs e)
+        private void dgvSites_CellContentClick(object? sender, DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0 || e.ColumnIndex < 0)
                 return;
