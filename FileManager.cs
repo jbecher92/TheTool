@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Xml.Linq;
 
@@ -332,7 +333,28 @@ namespace TheTool
                 var newCfg = Path.Combine(rolePath, @"app\environments\config.json");
                 if (RequiresAppEnvironmentsConfig(roleDisplayName) && !File.Exists(newCfg))
                     TrySeedSingleConfigFromArchive(archivePath, rolePath, onProgress);
+
+                // ---------------------------
+                // Post-deploy rewrites (CIS/eSub only)
+                // ---------------------------
+                try
+                {
+                    // Hard gate: never touch DataAccess / PBKDataAccess
+                    if (roleDisplayName.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase) ||
+                        roleDisplayName.Equals("eSubpoena", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string siteTagLocal = $"{state}{client}";
+                        UpdateExternalIndexBaseHref(rolePath, siteTagLocal, Report, roleDisplayName);
+                        UpdateExternalRewriteAction(rolePath, siteTagLocal, Report, roleDisplayName);
+                    }
+                    // else: DataAccess/PBKDataAccess → do nothing (no logs)
+                }
+                catch (Exception ex)
+                {
+                    Report($"{state}{client}[{roleDisplayName}][ERROR]: Post-deploy rewrites failed: {ex.Message}");
+                }
             }
+
 
 
             static void TryBackupFolder(string sourceDir, string archivePath, Action<string> log)
@@ -347,7 +369,7 @@ namespace TheTool
 
 
         // =====================================================================
-        //                              WEB CONFIG 
+        //                           WEB CONFIG 
         // =====================================================================
 
         public static void WebBackup(
@@ -471,7 +493,7 @@ namespace TheTool
                 }
                 catch
                 {
-                    // If regex fails for any reason, fall back to naive replace (still case-insensitive).
+                    // If regex fails for any reason, fall back to naive replace
                     newValue = oldValue.Replace(prevFolder, newFolder, StringComparison.OrdinalIgnoreCase);
                 }
 
@@ -484,16 +506,116 @@ namespace TheTool
                 target.SetAttributeValue("value", newValue);
                 doc.Save(configPath);
 
-                // Exact log line (before completion)
                 onProgress?.Invoke($"{siteTag}[Web]: Key Modified - <add key=\"RSLocalReportFolder\" value=\"{newValue}\" />");
 
             }
             catch (Exception ex)
             {
-                onProgress?.Invoke($"[ERROR] UpdateRSLocalReportFolder failed: {ex.Message}");
+                onProgress?.Invoke($"[Error] UpdateRSLocalReportFolder failed: {ex.Message}");
             }
         }
 
+        public static void UpdateExternalIndexBaseHref(string rolePath, string siteTag, Action<string>? log, string roleDisplay)
+        {
+            // rolePath: ...\CaseInfoSearch or ...\eSubpoena
+            try
+            {
+                string indexPath = Path.Combine(rolePath, @"app\index.html");
+                if (!File.Exists(indexPath)) { log?.Invoke($"{siteTag}{roleDisplay}[Skip]: app\\index.html not found."); return; }
+
+                string html = File.ReadAllText(indexPath);
+                string original = html;
+
+                // Determine app name from rolePath
+                string appName = rolePath.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase) ? "CaseInfoSearch" : "eSubpoena";
+
+                // Match: <base href="/{AppName}{anything}/app/">
+                // Replace with: <base href="/{SiteTag}{AppName}/app/">
+                var rx = new Regex($@"(<base\s+href=""/){appName}[^/""]*(/app/""\s*>)",
+                                   RegexOptions.IgnoreCase);
+
+                if (!rx.IsMatch(html))
+                {
+                    log?.Invoke($"{siteTag}{roleDisplay}[Skip]: Expected '<base href=\"/{appName}*/app/\">' not found");
+                    return;
+                }
+
+                html = rx.Replace(html, $"$1{siteTag}{appName}$2", 1);
+
+                if (string.Equals(html, original, StringComparison.Ordinal))
+                {
+                    log?.Invoke($"{siteTag}{roleDisplay}[Warning]: app\\index.html unchanged.");
+                    return;
+                }
+
+                File.WriteAllText(indexPath, html);
+                //log?.Invoke($"{siteTag}{roleDisplay}: File Modified - app\\index.html");
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"{siteTag}{roleDisplay}[Error]: index.html update failed: {ex.Message}");
+            }
+        }
+
+        public static void UpdateExternalRewriteAction(string rolePath, string siteTag, Action<string>? log, string roleDisplay)
+        {
+            try
+            {
+                string cfgPath = Path.Combine(rolePath, @"app\web.config");
+                if (!File.Exists(cfgPath)) { log?.Invoke($"{siteTag}{roleDisplay}[Skip]: app\\web.config not found."); return; }
+
+                // Load as XML, preserve whitespace to avoid noisy diffs
+                var doc = XDocument.Load(cfgPath, LoadOptions.PreserveWhitespace);
+
+                // Find all <action> elements regardless of namespace
+                var actions = doc.Descendants()
+                                 .Where(e => string.Equals(e.Name.LocalName, "action", StringComparison.OrdinalIgnoreCase))
+                                 .ToList();
+
+                if (actions.Count == 0)
+                {
+                    log?.Invoke($"{siteTag}{roleDisplay}[Skip]: No <action> elements found in app\\web.config.");
+                    return;
+                }
+
+                // Determine role by path end
+                bool isCis = rolePath.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase);
+                string appName = isCis ? "CaseInfoSearch" : "eSubpoena";
+                string desiredUrl = $"/{siteTag}{appName}/app/"; // final, canonical target
+
+                // Find the first action that points at this app
+                var target = actions.FirstOrDefault(a =>
+                {
+                    var urlAttr = a.Attributes().FirstOrDefault(x => string.Equals(x.Name.LocalName, "url", StringComparison.OrdinalIgnoreCase));
+                    if (urlAttr is null) return false;
+                    var v = urlAttr.Value ?? string.Empty;
+                    return v.StartsWith($"/{appName}", StringComparison.OrdinalIgnoreCase)
+                           || v.StartsWith($"/{siteTag}{appName}", StringComparison.OrdinalIgnoreCase);
+                });
+
+                if (target == null)
+                {
+                    var expected = isCis ? "/CaseInfoSearch*/(maybe /app/)" : "/eSubpoena*/(maybe /app/)";
+                    log?.Invoke($"{siteTag}{roleDisplay}[Skip]: Expected <action ... url=\"{expected}\"> not found.");
+                    return;
+                }
+
+                var url = target.Attributes().First(x => string.Equals(x.Name.LocalName, "url", StringComparison.OrdinalIgnoreCase));
+                if (string.Equals(url.Value, desiredUrl, StringComparison.Ordinal))
+                {
+                    log?.Invoke($"{siteTag}{roleDisplay}: app\\web.config unchanged.");
+                    return;
+                }
+
+                url.Value = desiredUrl;
+                doc.Save(cfgPath);
+                //log?.Invoke($"{siteTag}{roleDisplay}: File Modified - app\\web.config");
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"{siteTag}{roleDisplay}[Error]: web.config update failed: {ex.Message}");
+            }
+        }
 
         // =====================================================================
         //                              I/O UTILITIES
