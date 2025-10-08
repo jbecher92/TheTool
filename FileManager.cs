@@ -6,6 +6,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Threading;
+using System.Xml.Linq;
 
 namespace TheTool
 {
@@ -187,6 +188,12 @@ namespace TheTool
             // 8) Keep only the most recent backup zip
             CleanupBackupsKeepMostRecent(basePath, state, client);
 
+            // 9) Backup Web
+            WebBackup(resolvedRoot, state, client, newFolder, () => DateTime.Now.ToString("MMddyyyy"), onProgress);
+            
+            // 10) Update SSRS key in web.config
+            UpdateSSRSKey( resolvedRoot, state, client, prevFolder, newFolder, onProgress);
+
             Report($"{siteTag}: Production Update Complete.");
         }
 
@@ -337,6 +344,156 @@ namespace TheTool
                 CreateZipArchive(sourceDir, archivePath);
             }
         }
+
+
+        // =====================================================================
+        //                              WEB CONFIG 
+        // =====================================================================
+
+        public static void WebBackup(
+            string resolvedRoot,
+            string state,
+            string client,
+            string newFolder,
+            Func<string> todayTagProvider,
+            Action<string>? onProgress = null)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(resolvedRoot)) throw new ArgumentException(nameof(resolvedRoot));
+                if (string.IsNullOrWhiteSpace(state)) throw new ArgumentException(nameof(state));
+                if (string.IsNullOrWhiteSpace(client)) throw new ArgumentException(nameof(client));
+                if (string.IsNullOrWhiteSpace(newFolder)) throw new ArgumentException(nameof(newFolder));
+
+                string prodBasePath = ResolveProdBasePath(resolvedRoot, state, client); 
+                string configPath = Path.Combine(prodBasePath, newFolder, "web.config");
+                if (!File.Exists(configPath))
+                {
+                    onProgress?.Invoke($"{state}{client}[Web]: web.config not found for backup at '{configPath}' - skipped.");
+                    return;
+                }
+                string backupDir = Path.Combine(prodBasePath, "webconfigbackup");
+                Directory.CreateDirectory(backupDir);
+
+                string backupPath = Path.Combine(backupDir, $"web_backup_{todayTagProvider()}.config");
+                File.Copy(configPath, backupPath, overwrite: true);
+
+                onProgress?.Invoke($"{state}{client}[Web]: Backup created - {backupPath}");
+            }
+            catch (Exception ex)
+            {
+                onProgress?.Invoke($"[ERROR] BackupWebConfigForTag failed: {ex.Message}");
+            }
+        }
+
+        public static void UpdateSSRSKey(
+            string resolvedRoot,
+            string state,
+            string client,
+            string prevFolder,
+            string newFolder,
+            Action<string>? onProgress = null)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(resolvedRoot)) throw new ArgumentException(nameof(resolvedRoot));
+                if (string.IsNullOrWhiteSpace(state)) throw new ArgumentException(nameof(state));
+                if (string.IsNullOrWhiteSpace(client)) throw new ArgumentException(nameof(client));
+                if (string.IsNullOrWhiteSpace(newFolder)) throw new ArgumentException(nameof(newFolder));
+
+                string siteTag = $"{state}{client}";
+                string prodBasePath = ResolveProdBasePath(resolvedRoot, state, client);
+                string configPath = Path.Combine(prodBasePath, newFolder, "web.config");
+
+                if (string.IsNullOrWhiteSpace(prevFolder))
+                {
+                    onProgress?.Invoke($"{siteTag}[Web]: RSLocalReportFolder skipped (no previous folder).");
+                    return;
+                }
+
+                if (!File.Exists(configPath))
+                {
+                    onProgress?.Invoke($"{siteTag}[Web]: web.config not found at '{configPath}' - skipped.");
+                    return;
+                }
+
+                var doc = XDocument.Load(configPath, LoadOptions.PreserveWhitespace);
+                var appSettings = doc.Root?.Element("appSettings");
+                if (appSettings == null)
+                {
+                    onProgress?.Invoke($"{siteTag}[Web]: appSettings missing - skipped.");
+                    return;
+                }
+
+                var target = appSettings.Elements("add")
+                    .FirstOrDefault(e => string.Equals((string?)e.Attribute("key"), "RSLocalReportFolder", StringComparison.OrdinalIgnoreCase));
+
+                if (target == null)
+                {
+                    onProgress?.Invoke($"{siteTag}[Web]: RSLocalReportFolder key not found - skipped.");
+                    return;
+                }
+
+                string? oldValue = (string?)target.Attribute("value");
+                if (string.IsNullOrEmpty(oldValue))
+                {
+                    onProgress?.Invoke($"{siteTag}[Web]: RSLocalReportFolder value empty - skipped.");
+                    return;
+                }
+
+                string segPrevB = Path.DirectorySeparatorChar + prevFolder + Path.DirectorySeparatorChar; 
+                string segNewB = Path.DirectorySeparatorChar + newFolder + Path.DirectorySeparatorChar;
+                string newValue = oldValue;
+
+                try
+                {
+                    // Bounded replace around separators (handles \ or /, single or doubled)
+                    var patternBounded = @"(?<=[\\/])" + System.Text.RegularExpressions.Regex.Escape(prevFolder) + @"(?=[\\/])";
+                    var bounded = System.Text.RegularExpressions.Regex.Replace(
+                        oldValue, patternBounded, newFolder,
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+                    if (!string.Equals(bounded, oldValue, StringComparison.Ordinal))
+                    {
+                        newValue = bounded;
+                    }
+                    else
+                    {
+                        var rx = new System.Text.RegularExpressions.Regex(@"([\\/])(\d{8})(?=[\\/])",
+                            System.Text.RegularExpressions.RegexOptions.RightToLeft);
+                        newValue = rx.Replace(oldValue, m =>
+                        {
+                            var sep = m.Groups[1].Value; // keep original separator
+                            var digits = m.Groups[2].Value;
+                            return sep + newFolder; // keep trailing separator via the lookahead
+                        }, 1);
+                    }
+                }
+                catch
+                {
+                    // If regex fails for any reason, fall back to naive replace (still case-insensitive).
+                    newValue = oldValue.Replace(prevFolder, newFolder, StringComparison.OrdinalIgnoreCase);
+                }
+
+                if (string.Equals(newValue, oldValue, StringComparison.Ordinal))
+                {
+                    onProgress?.Invoke($"{siteTag}[Web]: RSLocalReportFolder unchanged - {oldValue}");
+                    return;
+                }
+
+                target.SetAttributeValue("value", newValue);
+                doc.Save(configPath);
+
+                // Exact log line (before completion)
+                onProgress?.Invoke($"{siteTag}[Web]: Key Modified - <add key=\"RSLocalReportFolder\" value=\"{newValue}\" />");
+
+            }
+            catch (Exception ex)
+            {
+                onProgress?.Invoke($"[ERROR] UpdateRSLocalReportFolder failed: {ex.Message}");
+            }
+        }
+
 
         // =====================================================================
         //                              I/O UTILITIES
@@ -713,10 +870,7 @@ namespace TheTool
             {
                 File.Copy(src, dst, overwrite: false);
             }
-            catch (Exception)
-            {
-            }
-
+            catch (Exception){ }
         }
 
         private static void DeleteAllInsideExcept(string root, IEnumerable<string> relKeep)
@@ -1021,85 +1175,11 @@ namespace TheTool
                 catch { }
             }
         }
-
         private static bool RequiresAppEnvironmentsConfig(string appFolderName)
         {
             // Only EAP/CaseInfoSearch and eSubpoena require app\environments\config.json
             return appFolderName.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)
                 || appFolderName.Equals("eSubpoena", StringComparison.OrdinalIgnoreCase);
         }
-
-
-        //private static bool TrySeedSingleConfigFromArchive(string archivePath, string destRoot, Action<string>? log)
-        //{
-        //    const string relConfig = @"app\environments\config.json";
-        //    var outPath = Path.Combine(destRoot, relConfig);
-
-        //    try
-        //    {
-        //        Directory.CreateDirectory(Path.GetDirectoryName(outPath)!);
-
-        //        var ext = Path.GetExtension(archivePath).ToLowerInvariant();
-        //        if (ext == ".zip")
-        //        {
-        //            using var archive = ZipFile.OpenRead(archivePath);
-        //            // Normalize both sides to forward slashes for comparison
-        //            string want = "app/environments/config.json";
-        //            var entry = archive.Entries.FirstOrDefault(e =>
-        //                string.Equals(e.FullName.Replace('\\', '/'), want, StringComparison.OrdinalIgnoreCase));
-
-        //            if (entry == null)
-        //            {
-        //                log?.Invoke("[Config] Build did not contain app\\environments\\config.json.");
-        //                return false;
-        //            }
-
-        //            entry.ExtractToFile(outPath, overwrite: true);
-        //            log?.Invoke("[Config] Seeded app\\environments\\config.json from build.");
-        //            return true;
-        //        }
-
-        //        if (ext == ".7z")
-        //        {
-        //            var sevenZipExe = Find7zExe();
-        //            if (sevenZipExe == null)
-        //            {
-        //                log?.Invoke("[Config] 7z.exe not found; cannot seed app\\environments\\config.json.");
-        //                return false;
-        //            }
-
-        //            // Extract just the one file, skipping overwrites elsewhere (-aos).
-        //            var psi = new ProcessStartInfo
-        //            {
-        //                FileName = sevenZipExe,
-        //                Arguments = $"x \"{archivePath}\" -o\"{destRoot}\" -y -aos \"{relConfig}\"",
-        //                UseShellExecute = false,
-        //                CreateNoWindow = true,
-        //                RedirectStandardOutput = true,
-        //                RedirectStandardError = true
-        //            };
-
-        //            using var p = Process.Start(psi)!;
-        //            p.WaitForExit();
-
-        //            if (p.ExitCode == 0 && File.Exists(outPath))
-        //            {
-        //                log?.Invoke("[Config] Seeded app\\environments\\config.json from build.");
-        //                return true;
-        //            }
-
-        //            log?.Invoke("[Config] Build did not contain app\\environments\\config.json.");
-        //            return false;
-        //        }
-
-        //        log?.Invoke("[Config] Unsupported archive type for seeding.");
-        //        return false;
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        log?.Invoke($"[Config] Failed to seed app\\environments\\config.json: {ex.Message}");
-        //        return false;
-        //    }
-        //}
     }
 }
