@@ -48,14 +48,11 @@ namespace TheTool
                 cfg = new AppConfig();
             }
 
-            // ------------------------------
-            // Validate DeploymentFlavor here
-            // ------------------------------
             string flavor = (cfg.DeploymentFlavor ?? "").Trim().ToLowerInvariant();
-            if (!new[] { "prod", "test", "internal" }.Contains(flavor))
+            if (!new[] { "prod", "test", "internal", "az" }.Contains(flavor))
             {
                 MessageBox.Show(
-                    $"Invalid Config Setting: '{cfg.DeploymentFlavor}'. Must be 'prod', 'test', or 'internal'.\nThe program will now exit.",
+                    $"Invalid Config Setting: '{cfg.DeploymentFlavor}'. Must be 'prod', 'test', 'internal', or 'az'.\nThe program will now exit.",
                     "Configuration Error",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
@@ -566,6 +563,7 @@ namespace TheTool
             {
                 "internal" => appConfig?.InternalPath?.Trim() ?? throw new InvalidOperationException("InternalPath not configured."),
                 "test" => appConfig?.ValidatePath?.Trim() ?? throw new InvalidOperationException("ValidatePath not configured."),
+                "az" => prodRoot, //uses SitesRootPath (prod)
                 _ => prodRoot
             };
         }

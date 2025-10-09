@@ -91,11 +91,11 @@ namespace TheTool
 
         private static void ValidateDeploymentFlavor(string? flavor)
         {
-            var validFlavors = new[] { "prod", "test", "internal" };
+            var validFlavors = new[] { "prod", "test", "internal", "az" };
             if (string.IsNullOrWhiteSpace(flavor) || !validFlavors.Contains(flavor.Trim().ToLowerInvariant()))
             {
                 MessageBox.Show(
-                    $"Invalid DeploymentFlavor: '{flavor}'. Must be 'prod', 'test', or 'internal'.\nThe program will now exit.",
+                    $"Invalid DeploymentFlavor: '{flavor}'. Must be 'prod', 'test', 'internal', or 'az'.\nThe program will now exit.",
                     "Configuration Error",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);

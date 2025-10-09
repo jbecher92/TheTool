@@ -52,8 +52,12 @@ namespace TheTool
             string s = state.Trim().ToUpperInvariant();
             string c = client.Trim();
             string flavor = (deploymentFlavor ?? "prod").Trim().ToLowerInvariant();
-            string basePath = flavor == "prod" ? Path.Combine(resolvedRoot, s) : resolvedRoot;
-            string containerName = "PbkExternal"; //Default container name to fall back on
+
+            // Only PROD nests externals under {root}\{STATE}\...; TEST/INTERNAL/AZ do NOT.
+            bool nestByState = flavor == "prod";
+            string basePath = nestByState ? Path.Combine(resolvedRoot, s) : resolvedRoot;
+
+            string containerName = "PbkExternal"; // default container name
             try
             {
                 if (Directory.Exists(basePath))
@@ -63,17 +67,16 @@ namespace TheTool
                                          .FirstOrDefault(name =>
                                              !string.IsNullOrEmpty(name) &&
                                              name.IndexOf("external", StringComparison.OrdinalIgnoreCase) >= 0);
-
-                    // Wildcard search, only override if something was actually found
                     if (!string.IsNullOrEmpty(match))
-                        containerName = match;
+                        containerName = match; // honor existing ExternalSites-like name
                 }
             }
-            catch { /* ignore */}
+            catch { /* ignore */ }
 
             string clientRoot = Path.Combine(basePath, containerName, s + c);
             return Path.GetFullPath(clientRoot);
         }
+
 
         public static void DeployProduction_Update(
             string state,
@@ -189,11 +192,14 @@ namespace TheTool
             // 8) Keep only the most recent backup zip
             CleanupBackupsKeepMostRecent(basePath, state, client);
 
-            // 9) Backup Web
-            WebBackup(resolvedRoot, state, client, newFolder, () => DateTime.Now.ToString("MMddyyyy"), onProgress);
+            // 9) Backup web.config before modification. skip create for now
+            if (!creationPath)
+                WebBackup(resolvedRoot, state, client, newFolder, () => DateTime.Now.ToString("MMddyyyy"), onProgress);
             
-            // 10) Update SSRS key in web.config
-            UpdateSSRSKey( resolvedRoot, state, client, prevFolder, newFolder, onProgress);
+
+            // 10) Update SSRS key in web.config. skip create for now
+            if (!creationPath)
+                UpdateSSRSKey( resolvedRoot, state, client, prevFolder, newFolder, onProgress);
 
             Report($"{siteTag}: Production Update Complete.");
         }
@@ -412,7 +418,7 @@ namespace TheTool
             string resolvedRoot,
             string state,
             string client,
-            string prevFolder,
+            string prevFolder,   // kept for signature compatibility (unused)
             string newFolder,
             Action<string>? onProgress = null)
         {
@@ -424,22 +430,41 @@ namespace TheTool
                 if (string.IsNullOrWhiteSpace(newFolder)) throw new ArgumentException(nameof(newFolder));
 
                 string siteTag = $"{state}{client}";
-                string prodBasePath = ResolveProdBasePath(resolvedRoot, state, client);
-                string configPath = Path.Combine(prodBasePath, newFolder, "web.config");
+                string basePath = ResolveProdBasePath(resolvedRoot, state, client);
 
-                if (string.IsNullOrWhiteSpace(prevFolder))
+                // 1) Pick target web.config (no latest-tag fallback)
+                string primary = Path.Combine(basePath, newFolder, "web.config");
+                string legacy = Path.Combine(basePath, "web.config");
+
+                string? targetConfig = File.Exists(primary) ? primary
+                                      : File.Exists(legacy) ? legacy
+                                      : null;
+
+                if (targetConfig is null)
                 {
-                    onProgress?.Invoke($"{siteTag}[Web]: RSLocalReportFolder skipped (no previous folder).");
+                    onProgress?.Invoke($"{siteTag}[Web]: web.config not found at '{primary}' or '{legacy}' — skipped.");
                     return;
                 }
 
-                if (!File.Exists(configPath))
+                // 2) Detect existing Reports dir under the NEW tag (no creation)
+                string reportsDirName = Directory.Exists(Path.Combine(basePath, newFolder, "Reports")) ? "Reports"
+                                    : Directory.Exists(Path.Combine(basePath, newFolder, "reports")) ? "reports"
+                                    : string.Empty;
+
+                if (string.IsNullOrEmpty(reportsDirName))
                 {
-                    onProgress?.Invoke($"{siteTag}[Web]: web.config not found at '{configPath}' - skipped.");
+                    onProgress?.Invoke($"{siteTag}[Web]: Reports folder not found under '{Path.Combine(basePath, newFolder)}' — skipped.");
                     return;
                 }
 
-                var doc = XDocument.Load(configPath, LoadOptions.PreserveWhitespace);
+                // 3) Build final path (dated) and write with DOUBLE backslashes
+                string targetReportsPath = Path.Combine(basePath, newFolder, reportsDirName);
+                if (!targetReportsPath.EndsWith(Path.DirectorySeparatorChar.ToString()))
+                    targetReportsPath += Path.DirectorySeparatorChar;
+
+                string configValue = targetReportsPath.Replace(@"\", @"\\"); // <-- preserve \\ formatting
+
+                var doc = XDocument.Load(targetConfig, LoadOptions.PreserveWhitespace);
                 var appSettings = doc.Root?.Element("appSettings");
                 if (appSettings == null)
                 {
@@ -456,64 +481,19 @@ namespace TheTool
                     return;
                 }
 
-                string? oldValue = (string?)target.Attribute("value");
-                if (string.IsNullOrEmpty(oldValue))
-                {
-                    onProgress?.Invoke($"{siteTag}[Web]: RSLocalReportFolder value empty - skipped.");
-                    return;
-                }
+                target.SetAttributeValue("value", configValue);
+                doc.Save(targetConfig);
 
-                string segPrevB = Path.DirectorySeparatorChar + prevFolder + Path.DirectorySeparatorChar; 
-                string segNewB = Path.DirectorySeparatorChar + newFolder + Path.DirectorySeparatorChar;
-                string newValue = oldValue;
-
-                try
-                {
-                    // Bounded replace around separators (handles \ or /, single or doubled)
-                    var patternBounded = @"(?<=[\\/])" + System.Text.RegularExpressions.Regex.Escape(prevFolder) + @"(?=[\\/])";
-                    var bounded = System.Text.RegularExpressions.Regex.Replace(
-                        oldValue, patternBounded, newFolder,
-                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-
-                    if (!string.Equals(bounded, oldValue, StringComparison.Ordinal))
-                    {
-                        newValue = bounded;
-                    }
-                    else
-                    {
-                        var rx = new System.Text.RegularExpressions.Regex(@"([\\/])(\d{8})(?=[\\/])",
-                            System.Text.RegularExpressions.RegexOptions.RightToLeft);
-                        newValue = rx.Replace(oldValue, m =>
-                        {
-                            var sep = m.Groups[1].Value; // keep original separator
-                            var digits = m.Groups[2].Value;
-                            return sep + newFolder; // keep trailing separator via the lookahead
-                        }, 1);
-                    }
-                }
-                catch
-                {
-                    // If regex fails for any reason, fall back to naive replace
-                    newValue = oldValue.Replace(prevFolder, newFolder, StringComparison.OrdinalIgnoreCase);
-                }
-
-                if (string.Equals(newValue, oldValue, StringComparison.Ordinal))
-                {
-                    onProgress?.Invoke($"{siteTag}[Web]: RSLocalReportFolder unchanged - {oldValue}");
-                    return;
-                }
-
-                target.SetAttributeValue("value", newValue);
-                doc.Save(configPath);
-
-                onProgress?.Invoke($"{siteTag}[Web]: Key Modified - <add key=\"RSLocalReportFolder\" value=\"{newValue}\" />");
-
+                onProgress?.Invoke($"{siteTag}[Web]: Key Modified - <add key=\"RSLocalReportFolder\" value=\"{configValue}\" />");
             }
             catch (Exception ex)
             {
-                onProgress?.Invoke($"[Error] UpdateRSLocalReportFolder failed: {ex.Message}");
+                onProgress?.Invoke($"[ERROR] UpdateSSRSKey failed: {ex.Message}");
             }
         }
+
+
+
 
         public static void UpdateExternalIndexBaseHref(string rolePath, string siteTag, Action<string>? log, string roleDisplay)
         {

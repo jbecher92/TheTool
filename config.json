@@ -1,5 +1,5 @@
 {
-  "NotesForUser":  "Set DeploymentFlavor to prod, test, or internal. Adjust SitesRootPath/SitesDrive if updating production and the drive is not F",
+  "NotesForUser": "Set DeploymentFlavor to prod, az, test, or internal. Use 'az' for servers that do not separate state directories",    
 
   "DeploymentFlavor": "prod",
 
