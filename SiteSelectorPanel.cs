@@ -80,25 +80,78 @@ namespace TheTool
 
         }
 
-        //public List<(string SiteName, bool Prod, bool EAP, bool eSub)> GetSelectedSites()
+        //private static void SetCheckboxIfWritable(DataGridViewRow row, string columnName, bool value)
         //{
-        //    var selected = new List<(string SiteName, bool Prod, bool EAP, bool eSub)>();
+        //    if (!row.DataGridView.Columns.Contains(columnName)) return;
 
-        //    foreach (DataGridViewRow row in dgvSites.Rows)
+        //    if (row.Cells[columnName] is DataGridViewCheckBoxCell cell)
         //    {
-        //        bool parentChecked = Convert.ToBoolean(row.Cells["colSelected"].Value ?? false);
-        //        if (!parentChecked) continue;
-
-        //        string siteName = row.Cells["colSiteName"].Value?.ToString() ?? string.Empty;
-        //        bool prod = Convert.ToBoolean(row.Cells["colProd"].Value ?? false);
-        //        bool ext = Convert.ToBoolean(row.Cells["colExt"].Value ?? false);
-        //        bool esub = Convert.ToBoolean(row.Cells["colESub"].Value ?? false);
-
-        //        selected.Add((siteName, prod, ext, esub));
+        //        if (cell.ReadOnly)
+        //        {
+        //            // enforce unchecked for disabled cells
+        //            if (!Equals(cell.Value, false))
+        //                cell.Value = false;
+        //            return;
+        //        }
+        //        cell.Value = value;
         //    }
-
-        //    return selected;
         //}
+
+
+        public void ApplyRoleAvailability(Dictionary<string, (bool HasCIS, bool HasESub, bool HasDA)> availability)
+        {
+            if (availability == null || availability.Count == 0) return;
+
+            foreach (DataGridViewRow row in dgvSites.Rows)
+            {
+                var key = row.Cells["colSiteName"].Value?.ToString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(key)) continue;
+
+                if (!availability.TryGetValue(key, out var roles)) continue;
+
+                // Columns assumed: colExt == CaseInfoSearch, colESub == eSubpoena.
+                // If you have a dedicated DA column, handle it similarly; if not, you can ignore DA.
+                SetCheckboxReadOnly(row.Cells["colExt"] as DataGridViewCheckBoxCell, !roles.HasCIS);
+                SetCheckboxReadOnly(row.Cells["colESub"] as DataGridViewCheckBoxCell, !roles.HasESub);
+
+                // OPTIONAL: If you show DA as a separate checkbox column (e.g., colDA),
+                // uncomment this line and ensure the column exists.
+                // SetCheckboxReadOnly(row.Cells["colDA"]   as DataGridViewCheckBoxCell,  !roles.HasDA);
+            }
+        }
+
+        // Small helper to visually gray-out and disable a checkbox cell
+        private static void SetCheckboxReadOnly(DataGridViewCheckBoxCell? cell, bool makeReadOnly)
+        {
+            if (cell == null) return;
+
+            var grid = cell.DataGridView;
+            cell.ReadOnly = makeReadOnly;
+
+            var style = new DataGridViewCellStyle(cell.Style);
+            if (makeReadOnly)
+            {
+                style.BackColor = SystemColors.ControlLight;
+                style.ForeColor = SystemColors.GrayText;
+                style.SelectionBackColor = SystemColors.ControlLight;
+                style.SelectionForeColor = SystemColors.GrayText;
+
+                cell.ThreeState = false;
+                cell.Value = false;
+            }
+            else if (grid != null)
+            {
+                // use the grid’s default colors when re-enabling
+                style.BackColor = grid.DefaultCellStyle.BackColor;
+                style.ForeColor = grid.DefaultCellStyle.ForeColor;
+                style.SelectionBackColor = grid.DefaultCellStyle.SelectionBackColor;
+                style.SelectionForeColor = grid.DefaultCellStyle.SelectionForeColor;
+            }
+
+            cell.Style = style;
+        }
+
+
 
         /// Filters the grid rows based on the text input.
         private void TxtFilter_TextChanged(object sender, EventArgs e)
@@ -122,16 +175,35 @@ namespace TheTool
             var row = grid.Rows[e.RowIndex];
             string colName = grid.Columns[e.ColumnIndex].Name;
 
-            // If the parent checkbox changed, mirror to all children.
+            // Helper for respecting ReadOnly state
+            void SetCheckboxIfWritable(string columnName, bool value)
+            {
+                if (!grid.Columns.Contains(columnName)) return;
+                if (row.Cells[columnName] is DataGridViewCheckBoxCell cell)
+                {
+                    if (cell.ReadOnly)
+                    {
+                        // Ensure disabled boxes stay unchecked
+                        if (!Equals(cell.Value, false))
+                            cell.Value = false;
+                        return;
+                    }
+                    cell.Value = value;
+                }
+            }
+
+            // -------------------------------
+            // If the parent checkbox changed
+            // -------------------------------
             if (colName == "colSelected")
             {
                 bool isChecked = Convert.ToBoolean(row.Cells["colSelected"].Value ?? false);
                 try
                 {
                     _suppressCascade = true; // avoid re-entrancy while we set child cells
-                    row.Cells["colProd"].Value = isChecked;
-                    row.Cells["colExt"].Value = isChecked;
-                    row.Cells["colESub"].Value = isChecked;
+                    SetCheckboxIfWritable("colProd", isChecked);
+                    SetCheckboxIfWritable("colExt", isChecked);
+                    SetCheckboxIfWritable("colESub", isChecked);
                 }
                 finally
                 {
@@ -140,7 +212,9 @@ namespace TheTool
                 return;
             }
 
-            // If any child changed, update the parent to reflect OR of children.
+            // -------------------------------
+            // If any child changed
+            // -------------------------------
             if (colName == "colProd" || colName == "colExt" || colName == "colESub")
             {
                 bool prodChecked = Convert.ToBoolean(row.Cells["colProd"].Value ?? false);
@@ -158,6 +232,7 @@ namespace TheTool
                 }
             }
         }
+
 
         public void ClearSelections()
         {

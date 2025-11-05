@@ -67,7 +67,7 @@ namespace TheTool
 
             // Option-1 respected: caller passed _resolvedRoot. These are pure string resolvers.
             string prodBase = FileManager.ResolveProdBasePath(_resolvedRoot, _state, _client);
-            string externalRoot = FileManager.ResolveExternalRoot(_state, _client, AppConfigManager.Config.DeploymentFlavor, _resolvedRoot);
+            string externalRoot = FileManager.ResolveExternalRoot(_state, _client, AppConfigManager.Config.DeploymentFlavor!, _resolvedRoot);
 
             if (_createProd)
                 rows.Add((site, prodBase));

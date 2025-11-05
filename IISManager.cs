@@ -14,6 +14,122 @@ namespace TheTool
         // ---------------------------
         // Discovery
         // ---------------------------
+        public static class IisRepoint
+        {
+            public static bool TryRepointAppForPoolToPath(
+                string appPoolName,
+                string targetPhysicalPath,
+                Action<string>? log)
+            {
+                if (string.IsNullOrWhiteSpace(appPoolName) ||
+                    string.IsNullOrWhiteSpace(targetPhysicalPath))
+                {
+                    log?.Invoke($"{appPoolName}[IIS][FATAL]: invalid repoint arguments.");
+                    return false;
+                }
+
+                var targetFull = Path.GetFullPath(
+                    targetPhysicalPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+
+                if (!Directory.Exists(targetFull))
+                {
+                    log?.Invoke($"{appPoolName}[IIS][FATAL]: target folder does not exist: '{targetFull}'. Refusing to repoint.");
+                    return false;
+                }
+
+                using var sm = new ServerManager();
+
+                var app = sm.Sites
+                    .SelectMany(s => s.Applications)
+                    .FirstOrDefault(a => string.Equals(a.ApplicationPoolName, appPoolName, StringComparison.OrdinalIgnoreCase));
+
+                if (app == null)
+                {
+                    if (!appPoolName.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase))
+                    {
+                        log?.Invoke($"{appPoolName}[IIS]: No application found using this app pool. Skipping repoint.");
+                    }
+                    return false;
+                }
+
+                var vdir = app.VirtualDirectories["/"];
+                if (vdir == null)
+                {
+                    log?.Invoke($"{appPoolName}[IIS][FATAL]: Root virtual directory not found. Refusing to repoint.");
+                    return false;
+                }
+
+                var current = (vdir.PhysicalPath ?? string.Empty)
+                    .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var currentFull = Path.GetFullPath(current);
+
+                if (string.Equals(currentFull, targetFull, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Already pointing at the canonical folder
+                    return true;
+                }
+
+                // Basic safety: do not hop drives
+                var currentRoot = Path.GetPathRoot(currentFull);
+                var targetRoot = Path.GetPathRoot(targetFull);
+                if (!string.IsNullOrEmpty(currentRoot) &&
+                    !string.IsNullOrEmpty(targetRoot) &&
+                    !string.Equals(currentRoot, targetRoot, StringComparison.OrdinalIgnoreCase))
+                {
+                    log?.Invoke($"{appPoolName}[IIS][FATAL]: refusing to change drive from '{currentRoot}' to '{targetRoot}'.");
+                    return false;
+                }
+
+                vdir.PhysicalPath = targetFull;
+                sm.CommitChanges();
+
+                return true;
+            }
+        }
+
+
+        public static class IisReadHelpers
+        {
+            
+            public static bool TryGetPhysicalPathForPool(string appPoolName, out string physicalPath)
+            {
+                physicalPath = string.Empty;
+                if (string.IsNullOrWhiteSpace(appPoolName)) return false;
+
+                using var sm = new ServerManager();
+                foreach (var site in sm.Sites)
+                {
+                    foreach (var app in site.Applications)
+                    {
+                        if (!string.Equals(app.ApplicationPoolName, appPoolName, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        // Root vdir of this application
+                        var vdir = app.VirtualDirectories["/"];
+                        var path = vdir?.PhysicalPath;
+                        if (!string.IsNullOrWhiteSpace(path))
+                        {
+                            physicalPath = path;
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+            //Used for creates to view standard file pathing
+            public static bool TryGetFirstPhysicalPath(IEnumerable<string> appPoolNames, out string physicalPath)
+            {
+                physicalPath = string.Empty;
+                if (appPoolNames is null) return false;
+                foreach (var name in appPoolNames)
+                {
+                    if (TryGetPhysicalPathForPool(name, out physicalPath))
+                        return true;
+                }
+                return false;
+            }
+        }
+
         public static List<string> GetIISAppPools(string? serverName = null)
         {
             using var mgr = string.IsNullOrWhiteSpace(serverName)
@@ -30,9 +146,6 @@ namespace TheTool
         // Core create/update helpers
         // ---------------------------
 
-        /// <summary>
-        /// Ensure an app pool exists and is configured with sane defaults.
-        /// </summary>
         public static void EnsureAppPool(
             string appPoolName,
             string managedRuntimeVersion = "v4.0",
@@ -56,77 +169,6 @@ namespace TheTool
             sm.CommitChanges();
         }
 
-        /// <summary>
-        /// Ensure a top-level IIS Site exists with a root app ("/") mapped to physicalPath and bound via binding (e.g. "*:80:" or "*:80:host").
-        /// Also assigns its root application to the given app pool.
-        /// </summary>
-        //public static void EnsureSite(string siteName, string appPoolName, string physicalPath, string binding)
-        //{
-        //    if (string.IsNullOrWhiteSpace(siteName)) throw new ArgumentException("siteName required");
-        //    if (string.IsNullOrWhiteSpace(appPoolName)) throw new ArgumentException("appPoolName required");
-        //    if (string.IsNullOrWhiteSpace(physicalPath)) throw new ArgumentException("physicalPath required");
-        //    if (string.IsNullOrWhiteSpace(binding)) throw new ArgumentException("binding required");
-
-        //    Directory.CreateDirectory(physicalPath);
-
-        //    using var sm = new ServerManager();
-
-        //    var site = sm.Sites[siteName];
-        //    if (site == null)
-        //    {
-        //        site = sm.Sites.Add(siteName, "http", binding, physicalPath);
-        //    }
-        //    else
-        //    {
-        //        // Update mapping/path
-        //        var rootApp = site.Applications["/"] ?? site.Applications.Add("/", physicalPath);
-        //        rootApp.VirtualDirectories["/"].PhysicalPath = physicalPath;
-
-        //        // Normalize bindings to single HTTP binding provided
-        //        site.Bindings.Clear();
-        //        site.Bindings.Add(binding, "http");
-        //    }
-
-        //    // Root app → app pool
-        //    site.Applications["/"].ApplicationPoolName = appPoolName;
-
-        //    sm.CommitChanges();
-        //}
-
-        /// <summary>
-        /// Ensure a child application exists under an existing site.
-        /// appPath must start with '/', e.g. "/CaseInfoSearch".
-        /// </summary>
-        //public static void EnsureApp(string siteName, string appPath, string physicalPath, string appPoolName)
-        //{
-        //    if (string.IsNullOrWhiteSpace(siteName)) throw new ArgumentException("siteName required");
-        //    if (string.IsNullOrWhiteSpace(appPath) || !appPath.StartsWith("/"))
-        //        throw new ArgumentException("appPath must start with '/'", nameof(appPath));
-        //    if (string.IsNullOrWhiteSpace(physicalPath)) throw new ArgumentException("physicalPath required");
-        //    if (string.IsNullOrWhiteSpace(appPoolName)) throw new ArgumentException("appPoolName required");
-
-        //    Directory.CreateDirectory(physicalPath);
-
-        //    using var sm = new ServerManager();
-        //    var site = sm.Sites[siteName] ?? throw new InvalidOperationException($"Site '{siteName}' not found.");
-
-        //    var app = site.Applications[appPath] ?? site.Applications.Add(appPath, physicalPath);
-        //    app.ApplicationPoolName = appPoolName;
-
-        //    // Ensure vdir points correctly
-        //    app.VirtualDirectories["/"].PhysicalPath = physicalPath;
-
-        //    sm.CommitChanges();
-        //}
-
-        // ---------------------------
-        // Back-compat convenience: Default Web Site mapping
-        // ---------------------------
-
-        /// <summary>
-        /// Create or retarget an app under "Default Web Site" at "/{appSegmentName}" and assign an app pool.
-        /// By default, does NOT stop/start the pool (set stopStartPool=true if you really need that behavior).
-        /// </summary>
         public static void EnsureAppUnderDefault(
             string appSegmentName,
             string physicalPath,
@@ -174,28 +216,6 @@ namespace TheTool
         // ---------------------------
         // Pool state helpers
         // ---------------------------
-
-        //public static void EnsurePoolStopped(string poolName, int timeoutMs = 60000)
-        //{
-        //    using var sm = new ServerManager();
-        //    var pool = sm.ApplicationPools.FirstOrDefault(p => p.Name.Equals(poolName, StringComparison.OrdinalIgnoreCase));
-        //    if (pool == null) return;
-        //    if (pool.State == ObjectState.Stopped || pool.State == ObjectState.Stopping) return;
-
-        //    pool.Stop(); sm.CommitChanges();
-        //    WaitForPoolState(sm, pool.Name, ObjectState.Stopped, timeoutMs);
-        //}
-
-        //public static void EnsurePoolStarted(string poolName, int timeoutMs = 60000)
-        //{
-        //    using var sm = new ServerManager();
-        //    var pool = sm.ApplicationPools.FirstOrDefault(p => p.Name.Equals(poolName, StringComparison.OrdinalIgnoreCase));
-        //    if (pool == null) return;
-        //    if (pool.State == ObjectState.Started || pool.State == ObjectState.Starting) return;
-
-        //    pool.Start(); sm.CommitChanges();
-        //    WaitForPoolState(sm, pool.Name, ObjectState.Started, timeoutMs);
-        //}
 
         private static void WaitForPoolState(ServerManager sm, string poolName, ObjectState desired, int timeoutMs)
         {
@@ -302,10 +322,6 @@ namespace TheTool
 
         static string RoleForPool(string pool)
         {
-            //if (pool.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)) return "CaseInfoSearch";
-            //if (pool.EndsWith("eSubpoena", StringComparison.OrdinalIgnoreCase)) return "eSubpoena";
-            //if (pool.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase) ||
-            //    pool.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase)) return "DataAccess";
             return pool;
         }
 

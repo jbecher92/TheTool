@@ -56,7 +56,7 @@ namespace TheTool
                     "Configuration Error",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
-                Environment.Exit(1); 
+                Environment.Exit(1);
             }
 
             return cfg;
@@ -133,7 +133,7 @@ namespace TheTool
                     if (_sitesNeedingReview.Count > 0)
                     {
                         log("");
-                        log("Sites requiring manual config review (missing/seeded app\\environments\\config.json):");
+                        log("Sites requiring manual config.json review");
                         foreach (var line in _sitesNeedingReview.OrderBy(x => x, StringComparer.OrdinalIgnoreCase))
                             log("  - " + line);
 
@@ -214,7 +214,7 @@ namespace TheTool
                         isCreate: true,
                         log: null,
                         confirmCtx: null,
-                        resolvedRoot: resolvedRoot); 
+                        resolvedRoot: resolvedRoot);
 
                     confirm.MarkComplete("Site creation complete.");
                 }
@@ -232,28 +232,24 @@ namespace TheTool
         }
 
         private async Task RunDeploymentAsync(
-            List<(string SiteName, bool Prod, bool EAP, bool eSub)> confirmedSites,
-            string prodZip,
-            string eapZip,
-            string esubZip,
-            string dataAccessZip,
-            bool isCreate,
-            Action<string>? log,
-            ConfirmationForm? confirmCtx,
-            string resolvedRoot)
+    List<(string SiteName, bool Prod, bool EAP, bool eSub)> confirmedSites,
+    string prodZip,
+    string eapZip,
+    string esubZip,
+    string dataAccessZip,
+    bool isCreate,
+    Action<string>? log,
+    ConfirmationForm? confirmCtx,
+    string resolvedRoot) // global root from config; IIS bases are discovered per-role
         {
             if (!ValidateZipSelections(confirmedSites, prodZip, eapZip, esubZip, dataAccessZip))
                 throw new InvalidOperationException("Validation failed.");
 
-            if (string.IsNullOrWhiteSpace(resolvedRoot))
-                throw new InvalidOperationException("resolvedRoot must be provided (Option-1 rule).");
-
-            _sitesNeedingReview.Clear();              // reset roll-up list
-            string tag = TodayTag();                  // <-- ALWAYS today's MMDDYYYY
+            _sitesNeedingReview.Clear();
+            string tag = TodayTag();
 
             var sitePlans = new List<(string SiteName, string State, string Client, bool DoProd, bool DoEap, bool DoESub)>();
             var poolsAffected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var externalRootCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var (siteName, prod, eap, esub) in confirmedSites)
             {
@@ -266,11 +262,17 @@ namespace TheTool
                 string state = siteName.Substring(0, 2).ToUpperInvariant();
                 string client = siteName.Substring(2);
 
+                // ONLY add pools for roles actually selected — do not touch externals unless selected
                 if (prod) poolsAffected.Add(siteName);
-                if (eap) poolsAffected.Add(state + client + "CaseInfoSearch");
-                if (esub) poolsAffected.Add(state + client + "eSubpoena");
-                if (eap || esub)
+                if (eap)
                 {
+                    poolsAffected.Add(state + client + "CaseInfoSearch");
+                    poolsAffected.Add(state + client + "DataAccess");
+                    poolsAffected.Add(state + client + "PBKDataAccess");
+                }
+                if (esub)
+                {
+                    poolsAffected.Add(state + client + "eSubpoena");
                     poolsAffected.Add(state + client + "DataAccess");
                     poolsAffected.Add(state + client + "PBKDataAccess");
                 }
@@ -284,28 +286,12 @@ namespace TheTool
                 return;
             }
 
-            if (isCreate)
+            static string NormalizeIisBase(string path)
             {
-                foreach (var plan in sitePlans)
-                {
-                    if (plan.DoProd)
-                    {
-                        string prodBase = FileManager.ResolveProdBasePath(resolvedRoot, plan.State, plan.Client);
-                        Directory.CreateDirectory(Path.Combine(prodBase, tag));
-                    }
-
-                    if (plan.DoEap || plan.DoESub)
-                    {
-                        string externalRoot = FileManager.ResolveExternalRoot(plan.State, plan.Client, AppConfigManager.Config.DeploymentFlavor ?? "prod", resolvedRoot, externalRootCache);
-                        Directory.CreateDirectory(externalRoot);
-
-                        if (plan.DoEap) Directory.CreateDirectory(Path.Combine(externalRoot, "CaseInfoSearch"));
-                        if (plan.DoESub) Directory.CreateDirectory(Path.Combine(externalRoot, "eSubpoena"));
-
-                        string daFolder = Directory.Exists(Path.Combine(externalRoot, "PBKDataAccess")) ? "PBKDataAccess" : "DataAccess";
-                        Directory.CreateDirectory(Path.Combine(externalRoot, daFolder));
-                    }
-                }
+                string full = Path.GetFullPath(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                string last = Path.GetFileName(full);
+                bool IsTag(string s) => !string.IsNullOrEmpty(s) && s.Length == 8 && s.All(char.IsDigit);
+                return IsTag(last) ? Path.GetDirectoryName(full)! : full;
             }
 
             Func<Task> work = async () =>
@@ -320,114 +306,135 @@ namespace TheTool
 
                     try
                     {
-                        // PRE-STATE 
-                        string prodBasePath = FileManager.ResolveProdBasePath(resolvedRoot, plan.State, plan.Client);
-                        string prevFolder = isCreate ? string.Empty : (FindLatestVersionFolder(prodBasePath) ?? string.Empty);
-
-                        bool prevProdHadConfig = false;
-                        if (!string.IsNullOrWhiteSpace(prevFolder))
-                            prevProdHadConfig = File.Exists(Path.Combine(prodBasePath, prevFolder, @"app\environments\config.json"));
-
-                        // Resolve external root then check actual existence on disk
-                        string externalRootForChecks = FileManager.ResolveExternalRoot(
-                            plan.State, plan.Client, AppConfigManager.Config.DeploymentFlavor ?? "prod", resolvedRoot, externalRootCache);
-
-                        bool extRootExistsBefore = Directory.Exists(externalRootForChecks);
-
-                        // Determine whether each external app folder exists before the update
-                        bool cisExistsBefore = extRootExistsBefore && Directory.Exists(Path.Combine(externalRootForChecks, "CaseInfoSearch"));
-                        bool esubExistsBefore = extRootExistsBefore && Directory.Exists(Path.Combine(externalRootForChecks, "eSubpoena"));
-
-                        // Only look for config if the app actually exists
-                        bool prevCisHadConfig = cisExistsBefore &&
-                            File.Exists(Path.Combine(externalRootForChecks, "CaseInfoSearch", @"app\environments\config.json"));
-                        bool prevEsubHadConfig = esubExistsBefore &&
-                            File.Exists(Path.Combine(externalRootForChecks, "eSubpoena", @"app\environments\config.json"));
-
-
-                        // PRODUCTION
+                        // ======================
+                        // PRODUCTION (if selected)
+                        // ======================
+                        string? prodBaseFromIis = null;
                         if (plan.DoProd)
                         {
                             confirmCtx?.EnterProdPhase(plan.SiteName);
-                            //log?.Invoke($"{plan.SiteName}: Updating Production.");
+
+                            if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.SiteName, out var phys))
+                            {
+                                prodBaseFromIis = NormalizeIisBase(phys);
+                            }
+                            else
+                            {
+                                log?.Invoke($"{plan.SiteName}[IIS][FATAL]: Could not resolve IIS physicalPath for production pool. Skipping.");
+                                confirmCtx?.LeavePhase();
+                                continue;
+                            }
+
+                            string prevFolder = isCreate ? string.Empty : (FindLatestVersionFolder(prodBaseFromIis) ?? string.Empty);
+
+                            bool prevProdHadConfig = (!string.IsNullOrWhiteSpace(prevFolder)) &&
+                                File.Exists(Path.Combine(prodBaseFromIis!, prevFolder, @"app\environments\config.json"));
 
                             await Task.Run(() =>
                             {
                                 FileManager.DeployProduction_Update(
-                                    plan.State, plan.Client, resolvedRoot,
+                                    plan.State, plan.Client,
+                                    prodBaseFromIis!,   // Option-1: pass IIS base
                                     prevFolder, tag, prodZip, onProgress: log);
                             });
 
                             confirmCtx?.LeavePhase();
 
-                            string newProdCfg = ProdConfigPath(resolvedRoot, plan.State, plan.Client, tag);
+                            string newProdCfg = Path.Combine(prodBaseFromIis!, tag, @"app\environments\config.json");
                             bool nowHasProdConfig = File.Exists(newProdCfg);
-                            if (!prevProdHadConfig || !nowHasProdConfig)
+                            if (!nowHasProdConfig)
                                 NoteForReview(plan.SiteName, "Production");
 
                             if (confirmCtx?.ShouldSkipExternalsFor(plan.SiteName) == true)
-                            {
-                                //log?.Invoke($"Aborting {plan.SiteName} Production. Skipping externals and all remaining clients.");
                                 break;
-                            }
                         }
 
-                        // EXTERNALS
+                        // ======================
+                        // EXTERNALS (only if selected)
+                        // ======================
                         if (plan.DoEap || plan.DoESub)
                         {
                             confirmCtx?.EnterExternalsPhase(plan.SiteName);
                             log?.Invoke($"{plan.SiteName}: Initiating External Updates");
 
-                            await Task.Run(() =>
+                            string? externalRootFromIis = null;
+                            bool got = false;
+
+                            if (!got && plan.DoEap && IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "CaseInfoSearch", out var cisPath))
+                            {
+                                string cisBase = NormalizeIisBase(cisPath);
+                                externalRootFromIis = Path.GetDirectoryName(cisBase);
+                                if (!string.IsNullOrEmpty(externalRootFromIis))
+                                {
+                                    //log?.Invoke($"{plan.SiteName}CaseInfoSearch[IIS]: Base resolved → {cisBase}");
+                                    got = true;
+                                }
+                            }
+                            if (!got && plan.DoESub && IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "eSubpoena", out var esuPath))
+                            {
+                                string esuBase = NormalizeIisBase(esuPath);
+                                externalRootFromIis = Path.GetDirectoryName(esuBase);
+                                if (!string.IsNullOrEmpty(externalRootFromIis))
+                                {
+                                    //log?.Invoke($"{plan.SiteName}eSubpoena[IIS]: Base resolved → {esuBase}");
+                                    got = true;
+                                }
+                            }
+                            if (!got && IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "DataAccess", out var daPath))
+                            {
+                                string daBase = NormalizeIisBase(daPath);
+                                externalRootFromIis = Path.GetDirectoryName(daBase);
+                                if (!string.IsNullOrEmpty(externalRootFromIis))
+                                {
+                                    //log?.Invoke($"{plan.SiteName}DataAccess[IIS]: Base resolved → {daBase}");
+                                    got = true;
+                                }
+                            }
+                            if (!got && IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "PBKDataAccess", out var pdaPath))
+                            {
+                                string pdaBase = NormalizeIisBase(pdaPath);
+                                externalRootFromIis = Path.GetDirectoryName(pdaBase);
+                                if (!string.IsNullOrEmpty(externalRootFromIis))
+                                {
+                                    //log?.Invoke($"{plan.SiteName}PBKDataAccess[IIS]: Base resolved → {pdaBase}");
+                                    got = true;
+                                }
+                            }
+
+                            if (!got || string.IsNullOrWhiteSpace(externalRootFromIis))
+                            {
+                                log?.Invoke($"{plan.SiteName}[IIS][Skip]: Could not resolve external root via IIS. Skipping externals.");
+                                confirmCtx?.LeavePhase();
+                            }
+                            else
                             {
                                 string? cisZip = plan.DoEap ? eapZip : null;
-                                string? esZip = plan.DoESub ? esubZip : null;
+                                string? esuZip = plan.DoESub ? esubZip : null;
 
-                                FileManager.DeployExternal_Update(
-                                    resolvedRoot, plan.State, plan.Client, tag,
-                                    cisZip, esZip, dataAccessZip, onProgress: log);
-                            });
-
-                            confirmCtx?.LeavePhase();
-
-                            string extRoot = FileManager.ResolveExternalRoot(
-                                plan.State, plan.Client, AppConfigManager.Config.DeploymentFlavor ?? "prod", resolvedRoot, externalRootCache);
-
-                            // Check what exists AFTER the update
-                            bool extRootExistsAfter = Directory.Exists(extRoot);
-                            bool cisExistsAfter = extRootExistsAfter && Directory.Exists(Path.Combine(extRoot, "CaseInfoSearch"));
-                            bool esuExistsAfter = extRootExistsAfter && Directory.Exists(Path.Combine(extRoot, "eSubpoena"));
-
-                            if (plan.DoEap)
-                            {
-                                if (cisExistsAfter)
+                                await Task.Run(() =>
                                 {
-                                    bool nowHasCisConfig = File.Exists(ExternalConfigPath(extRoot, "CaseInfoSearch"));
-                                    if (!prevCisHadConfig || !nowHasCisConfig)
-                                        NoteForReview(plan.SiteName, "CaseInfoSearch");
+                                    FileManager.DeployExternal_Update(
+                                        externalRootFromIis!, // Option-1: pass IIS external root
+                                        plan.State, plan.Client, tag,
+                                        cisZip, esuZip, dataAccessZip, onProgress: log);
+                                });
+
+                                confirmCtx?.LeavePhase();
+
+                                string cisRoot = Path.Combine(externalRootFromIis!, "CaseInfoSearch");
+                                string esuRoot = Path.Combine(externalRootFromIis!, "eSubpoena");
+
+                                if (plan.DoEap && Directory.Exists(cisRoot))
+                                {
+                                    bool hasCfg = File.Exists(Path.Combine(cisRoot, @"app\environments\config.json"));
+                                    if (!hasCfg) NoteForReview(plan.SiteName, "CaseInfoSearch");
                                 }
-                                else
+                                if (plan.DoESub && Directory.Exists(esuRoot))
                                 {
-                                    // App folder not present 
-                                    log?.Invoke($"{plan.SiteName}[Skip]: CaseInfoSearch not present.");
+                                    bool hasCfg = File.Exists(Path.Combine(esuRoot, @"app\environments\config.json"));
+                                    if (!hasCfg) NoteForReview(plan.SiteName, "eSubpoena");
                                 }
                             }
-
-                            if (plan.DoESub)
-                            {
-                                if (esuExistsAfter)
-                                {
-                                    bool nowHasEsuConfig = File.Exists(ExternalConfigPath(extRoot, "eSubpoena"));
-                                    if (!prevEsubHadConfig || !nowHasEsuConfig)
-                                        NoteForReview(plan.SiteName, "eSubpoena");
-                                }
-                                else
-                                {
-                                    // App folder not present
-                                    log?.Invoke($"{plan.SiteName}[Skip]: eSubpoena not present.");
-                                }
-                            }
-
                         }
                     }
                     catch (Exception ex)
@@ -453,75 +460,144 @@ namespace TheTool
             else
                 await IISManager.RunWithPoolsStoppedAsync(poolsAffected.ToArray(), work, log);
 
-            // Final IIS binding
-            // Resolve once per batch 
-            string deploymentFlavor = AppConfigManager.Config.DeploymentFlavor ?? "prod";
-
+            // Final IIS binding: use the same 'tag' computed above to avoid midnight rollover issues.
             foreach (var plan in sitePlans)
             {
                 if (plan.DoProd)
                 {
-                    string prodBasePath = FileManager.ResolveProdBasePath(resolvedRoot, plan.State, plan.Client);
-                    IISManager.EnsureAppUnderDefault(
-                        plan.State + plan.Client,
-                        Path.Combine(prodBasePath, tag),
-                        plan.SiteName);
+                    if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.SiteName, out var phys))
+                    {
+                        string prodBase = NormalizeIisBase(phys);
+                        IISManager.EnsureAppUnderDefault(
+                            plan.State + plan.Client,
+                            Path.Combine(prodBase, tag),
+                            plan.SiteName);
+                    }
                 }
                 if (plan.DoEap || plan.DoESub)
                 {
-                    string externalRoot = FileManager.ResolveExternalRoot(
-                        plan.State, plan.Client, deploymentFlavor, resolvedRoot, externalRootCache);
+                    string? externalRootFromIis = null;
+                    if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "CaseInfoSearch", out var cisPath))
+                        externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(cisPath));
+                    else if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "eSubpoena", out var esuPath))
+                        externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(esuPath));
+                    else if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "DataAccess", out var daPath))
+                        externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(daPath));
+                    else if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "PBKDataAccess", out var pdaPath))
+                        externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(pdaPath));
 
-                    if (plan.DoEap)
+                    if (!string.IsNullOrWhiteSpace(externalRootFromIis))
                     {
-                        string eapName = plan.State + plan.Client + "CaseInfoSearch";
-                        IISManager.EnsureAppUnderDefault(
-                            eapName,
-                            Path.Combine(externalRoot, "CaseInfoSearch"),
-                            eapName);
-                    }
-                    if (plan.DoESub)
-                    {
-                        string esubName = plan.State + plan.Client + "eSubpoena";
-                        IISManager.EnsureAppUnderDefault(
-                            esubName,
-                            Path.Combine(externalRoot, "eSubpoena"),
-                            esubName);
-                    }
-                    // Execution-time check 
-                    string daFolder = Directory.Exists(Path.Combine(externalRoot, "PBKDataAccess"))
-                                      ? "PBKDataAccess"
-                                      : "DataAccess";
+                        if (plan.DoEap)
+                        {
+                            string eapName = plan.State + plan.Client + "CaseInfoSearch";
+                            IISManager.EnsureAppUnderDefault(
+                                eapName,
+                                Path.Combine(externalRootFromIis!, "CaseInfoSearch"),
+                                eapName);
+                        }
+                        if (plan.DoESub)
+                        {
+                            string esubName = plan.State + plan.Client + "eSubpoena";
+                            IISManager.EnsureAppUnderDefault(
+                                esubName,
+                                Path.Combine(externalRootFromIis!, "eSubpoena"),
+                                esubName);
+                        }
 
-                    string daName = plan.State + plan.Client + daFolder;
-                    IISManager.EnsureAppUnderDefault(
-                        daName,
-                        Path.Combine(externalRoot, daFolder),
-                        daName);
+                        string daFolder = Directory.Exists(Path.Combine(externalRootFromIis!, "PBKDataAccess")) ? "PBKDataAccess" : "DataAccess";
+                        string daName = plan.State + plan.Client + daFolder;
+                        IISManager.EnsureAppUnderDefault(
+                            daName,
+                            Path.Combine(externalRootFromIis!, daFolder),
+                            daName);
+                    }
                 }
             }
         }
 
+
+
+        // Populate site selector panel with IIS app pools on load
         // Populate site selector panel with IIS app pools on load
         private void LoadAppPoolsIntoPanel()
         {
             try
             {
-                var appPools = IISManager.GetIISAppPools();
-                var filtered = appPools
+                // Get all app pools (prod + externals)
+                var allPools = IISManager.GetIISAppPools();
+
+                // Filter to only "main" pools for display (no externals)
+                var filtered = allPools
                     .Where(p =>
                         !p.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase) &&
                         !p.EndsWith("eSubpoena", StringComparison.OrdinalIgnoreCase) &&
                         !p.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase) &&
                         !p.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase))
                     .ToList();
+
                 if (filtered.Count == 0)
                 {
                     MessageBox.Show("No IIS application pools were found on this machine.");
                     return;
                 }
 
+                // Build role availability map:
+                //   key = base site (e.g., "MOClient")
+                //   value = (HasCIS, HasESub, HasDA)
+                var availability = new Dictionary<string, (bool HasCIS, bool HasESub, bool HasDA)>(
+                    StringComparer.OrdinalIgnoreCase);
+
+                foreach (var pool in allPools)
+                {
+                    string key = pool;
+                    bool hasCis = false;
+                    bool hasESub = false;
+                    bool hasDa = false;
+
+                    if (pool.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase))
+                    {
+                        key = pool.Substring(0, pool.Length - "CaseInfoSearch".Length);
+                        hasCis = true;
+                    }
+                    else if (pool.EndsWith("eSubpoena", StringComparison.OrdinalIgnoreCase))
+                    {
+                        key = pool.Substring(0, pool.Length - "eSubpoena".Length);
+                        hasESub = true;
+                    }
+                    else if (pool.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase))
+                    {
+                        key = pool.Substring(0, pool.Length - "PBKDataAccess".Length);
+                        hasDa = true;
+                    }
+                    else if (pool.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase))
+                    {
+                        key = pool.Substring(0, pool.Length - "DataAccess".Length);
+                        hasDa = true;
+                    }
+                    else
+                    {
+                        // Ensure the base pool itself has an entry, even if no externals exist
+                        if (!availability.ContainsKey(key))
+                            availability[key] = (HasCIS: false, HasESub: false, HasDA: false);
+                        continue;
+                    }
+
+                    if (!availability.TryGetValue(key, out var existing))
+                        existing = (HasCIS: false, HasESub: false, HasDA: false);
+
+                    availability[key] = (
+                        HasCIS: existing.HasCIS || hasCis,
+                        HasESub: existing.HasESub || hasESub,
+                        HasDA: existing.HasDA || hasDa
+                    );
+                }
+
+                // Load visible sites into the grid
                 siteSelectorPanel.LoadSites(filtered);
+
+                // Apply role availability so EAP/eSub checkboxes are disabled where app pools are missing
+                siteSelectorPanel.ApplyRoleAvailability(availability);
             }
             catch (UnauthorizedAccessException)
             {
@@ -547,6 +623,7 @@ namespace TheTool
                     MessageBoxIcon.Error);
             }
         }
+
 
         private static string NormalizeRoot(string root)
         {
@@ -672,18 +749,7 @@ namespace TheTool
             }
         }
 
-        // absolute path to Prod config.json for a given tag
-        private static string ProdConfigPath(string resolvedRoot, string state, string client, string tag)
-        {
-            var prodBase = FileManager.ResolveProdBasePath(resolvedRoot, state, client);
-            return Path.Combine(prodBase, tag, @"app\environments\config.json");
-        }
-
-        // absolute path to External role config.json
-        private static string ExternalConfigPath(string externalRoot, string roleFolderName)
-        {
-            return Path.Combine(externalRoot, roleFolderName, @"app\environments\config.json");
-        }
+       
 
         // note site/role for manual review 
         private void NoteForReview(string siteName, string roleLabel)
