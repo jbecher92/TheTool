@@ -33,21 +33,26 @@ namespace TheTool
             string normalized = Path.GetFullPath(resolvedRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             string last = Path.GetFileName(normalized);
 
-            // If resolvedRoot is already the IIS site base (…\STATE\STATECLIENT), return as-is.
+            // If resolvedRoot is already the IIS site base, return as-is.
             if (string.Equals(last, siteName, StringComparison.OrdinalIgnoreCase))
                 return normalized;
 
-            // Legacy fallback (supports old callers that pass a high-level root)
-            string possible = Path.Combine(normalized, s, siteName);
-            return Path.GetFullPath(possible);
+            string stateFolder = Path.Combine(normalized, s);
+            if (Directory.Exists(stateFolder))
+            {
+                string possible = Path.Combine(stateFolder, siteName);
+                return Path.GetFullPath(possible);
+            }
+            return normalized;
+
         }
 
         public static string ResolveExternalRoot(
-            string state,
-            string client,
-            string deploymentFlavor,
-            string resolvedRoot,
-            Dictionary<string, string>? /*unused*/ cache = null)
+    string state,
+    string client,
+    string deploymentFlavor,
+    string resolvedRoot,
+    Dictionary<string, string>? /*unused*/ cache = null)
         {
             if (string.IsNullOrWhiteSpace(state))
                 throw new ArgumentException("state is required", nameof(state));
@@ -90,7 +95,8 @@ namespace TheTool
                 }
             }
 
-            //External folder check
+            // NEW: if resolvedRoot itself looks like an external container (ExternalSites, PbkExternal, etc.),
+            // treat it as the external container and append STATECLIENT.
             bool rootLooksExternal =
                 last.IndexOf("external", StringComparison.OrdinalIgnoreCase) >= 0;
 
@@ -100,10 +106,23 @@ namespace TheTool
                 return Path.GetFullPath(clientRoot);
             }
 
-            // Legacy fallback
+            // Legacy fallback (supports old callers that pass a high-level root)
+            // Legacy fallback (supports old callers that pass a high-level root)
+            // IMPORTANT: never create a new STATE folder – only use it if it already exists.
             string flavor = (deploymentFlavor ?? "prod").Trim().ToLowerInvariant();
             bool nestByState = flavor == "prod";
-            string basePath = nestByState ? Path.Combine(resolvedRoot, s) : resolvedRoot;
+
+            string basePath = resolvedRoot;
+            if (nestByState)
+            {
+                var stateRootCandidate = Path.Combine(resolvedRoot, s);
+                if (Directory.Exists(stateRootCandidate))
+                {
+                    // Only step into \STATE if it already exists
+                    basePath = stateRootCandidate;
+                }
+                // else: leave basePath = resolvedRoot (no new STATE dir)
+            }
 
             // Pick existing external container name if present
             string containerName = "PbkExternal";
@@ -124,7 +143,9 @@ namespace TheTool
 
             string clientRootFallback = Path.Combine(basePath, containerName, s + c);
             return Path.GetFullPath(clientRootFallback);
+
         }
+
 
 
 
@@ -269,14 +290,14 @@ namespace TheTool
         // =====================================================================
 
         public static void DeployExternal_Update(
-            string resolvedRoot,     // may be a flat role folder or an external root
-            string state,
-            string client,
-            string backupTag,
-            string? caseInfoSearchZip,
-            string? esubpoenaZip,
-            string? dataAccessZip,
-            Action<string>? onProgress = null)
+    string resolvedRoot,     // may be a flat role folder (…\ExternalSites\AZDifferentCaseInfoSearch) or an external root (…\PbkExternal\STATECLIENT)
+    string state,
+    string client,
+    string backupTag,
+    string? caseInfoSearchZip,
+    string? esubpoenaZip,
+    string? dataAccessZip,
+    Action<string>? onProgress = null)
         {
             void Report(string msg) { try { onProgress?.Invoke(msg); } catch { } }
             string siteTag = $"{state}{client}";
@@ -286,21 +307,21 @@ namespace TheTool
             if (string.IsNullOrWhiteSpace(client)) throw new ArgumentException("client required");
             if (string.IsNullOrWhiteSpace(backupTag)) throw new ArgumentException("backupTag required");
 
+            // ---------------------------------------------------------------------
             // Normalize IIS-derived path + pick an "external base" for flat detection
+            // ---------------------------------------------------------------------
             var baseFromIis = Path.GetFullPath(
                 resolvedRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
-            // If the last segment starts with the siteTag then treat its parent as the external container
-            // Otherwise use the path as-is.
             string lastSegment = Path.GetFileName(baseFromIis);
             string externalBase =
                 lastSegment.StartsWith(siteTag, StringComparison.OrdinalIgnoreCase) && Path.GetDirectoryName(baseFromIis) is string parent
                     ? parent
                     : baseFromIis;
 
-            Report($"{siteTag}: External Base resolved → {externalBase}");
+            //Report($"{siteTag}: External Base resolved → {externalBase}");
 
-            string flatPrefix = siteTag;  
+            string flatPrefix = siteTag;  // e.g. "AZDifferent"
 
             // Legacy flat folders directly under the external base:
             string flatCis = Path.Combine(externalBase, flatPrefix + "CaseInfoSearch");
@@ -323,12 +344,14 @@ namespace TheTool
             string backupRoot;
             string daFolder;
 
-            // FLAT → CANONICAL MIGRATION
             if (flatMode)
             {
+                // -----------------------------------------------------------------
+                // FLAT → CANONICAL MIGRATION
+                // -----------------------------------------------------------------
+
                 daFolder = hasFlatPBK ? "PBKDataAccess" : "DataAccess";
 
-                // Decide the canonical client root under the detected external base:
                 bool baseLooksExternal =
                     externalBase.IndexOf("external", StringComparison.OrdinalIgnoreCase) >= 0;
 
@@ -387,9 +410,7 @@ namespace TheTool
             else
             {
                 // -----------------------------------------------------------------
-                //   NON-FLAT: already under an external root or config-root style.
-                //     - Handles PbkExternal layouts
-                //     - Handles misnamed client roots 
+                // NON-FLAT: already under an external root or config-root style.
                 // -----------------------------------------------------------------
                 externalRoot = baseFromIis;
 
@@ -398,37 +419,9 @@ namespace TheTool
                 bool parentLooksExternal = parentDir != null &&
                                            parentName.IndexOf("external", StringComparison.OrdinalIgnoreCase) >= 0;
 
-                if (parentLooksExternal)
+                if (!parentLooksExternal)
                 {
-                    // We are under some *External* container (e.g. ...\KY\PbkExternal\KYFartsmouth OR ...\KY\PbkExternal\Fartsmouth).
-                    string last = Path.GetFileName(externalRoot);
-
-                    if (!string.Equals(last, siteTag, StringComparison.OrdinalIgnoreCase))
-                    {
-                        // Misnamed client root (Fartsmouth vs KYFartsmouth). Migrate to canonical name.
-                        string canonicalRoot = Path.Combine(parentDir!, siteTag);
-                        Directory.CreateDirectory(canonicalRoot);
-
-                        CopyDirectoryContents(externalRoot, canonicalRoot);
-
-                        string oldName = externalRoot + "_old_" + backupTag;
-                        try
-                        {
-                            Directory.Move(externalRoot, oldName);
-                            Report($"{siteTag}: Detected misnamed external root '{externalRoot}'. Migrated to '{canonicalRoot}'. Old folder renamed to '{oldName}'.");
-                        }
-                        catch (Exception ex)
-                        {
-                            Report($"{siteTag}[External]: Failed to rename old external root '{externalRoot}' → '{oldName}': {ex.Message}");
-                        }
-
-                        externalRoot = canonicalRoot;
-                    }
-                    // else: already canonical, nothing to migrate
-                }
-                else
-                {
-                    // Fallback
+                    // Fallback: legacy config-root behavior (SitesRootPath etc.)
                     externalRoot = ResolveExternalRoot(
                         state,
                         client,
@@ -436,6 +429,7 @@ namespace TheTool
                         resolvedRoot);
                 }
 
+                // From here on, we only care about what's actually on disk at externalRoot.
                 daFolder = Directory.Exists(Path.Combine(externalRoot, "PBKDataAccess"))
                     ? "PBKDataAccess"
                     : "DataAccess";
@@ -446,6 +440,9 @@ namespace TheTool
                 backupRoot = externalRoot;
             }
 
+            // =====================================================================
+            //  VALIDATE ARCHIVES (unchanged semantics)
+            // =====================================================================
             if (!string.IsNullOrWhiteSpace(caseInfoSearchZip)) ValidateBuildName(caseInfoSearchZip, "caseinfosearch");
             if (!string.IsNullOrWhiteSpace(esubpoenaZip)) ValidateBuildName(esubpoenaZip, "esubpoena");
             if (!string.IsNullOrWhiteSpace(dataAccessZip)) ValidateBuildName(dataAccessZip, "dataaccess");
@@ -454,7 +451,7 @@ namespace TheTool
             string backupDir = GetExternalBackupDir(backupRoot, backupTag);
             Report($"{siteTag}: Creating External Backup - {backupDir}.");
 
-            // Backups
+            // --- Backups (only for roles provided) ---
             if (!string.IsNullOrWhiteSpace(caseInfoSearchZip))
                 TryBackupFolder(cisPath, Path.Combine(backupDir, "CaseInfoSearch.zip"), Report);
 
@@ -464,18 +461,27 @@ namespace TheTool
             if (!string.IsNullOrWhiteSpace(dataAccessZip))
                 TryBackupFolder(daPath, Path.Combine(backupDir, daFolder + ".zip"), Report);
 
-            // Deploy roles 
+            // --- Deploy roles (only for roles provided) ---
             DeployRoleIfProvided("CaseInfoSearch", caseInfoSearchZip, cisPath);
             DeployRoleIfProvided("eSubpoena", esubpoenaZip, esPath);
             DeployRoleIfProvided(daFolder, dataAccessZip, daPath);
 
-            //Repoint IIS app pools
-            RepointExternalPoolsIfPresent(state, client, cisPath, esPath, daPath, daFolder, Report);
+            // --- Repoint IIS app pools to the canonical paths (external roles) ---
+            if (flatMode)
+                RepointExternalPoolsIfPresent(state, client, cisPath, esPath, daPath, daFolder, Report);
 
-            // Clean old backups 
+            // Cleanup old backups for THIS client's backup root
             KeepOnlyMostRecentBackup(backupRoot, backupTag, Report);
 
+            // Flat-layout manual review flag (1 per site)
+            if (flatMode)
+            {
+                Report($"{siteTag}[ManualReview]: Flat external layout: '{externalBase}'. Migrated to '{externalRoot}'.");
+            }
+
             Report($"{siteTag}: External Update(s) Complete.");
+
+            // -------- Local helpers ----------
 
             void DeployRoleIfProvided(string roleDisplayName, string? archivePath, string rolePath)
             {
@@ -488,12 +494,32 @@ namespace TheTool
                     return;
                 }
 
+                // Capture existing Angular URLs (if any) before we wipe the folder
+                string? existingBaseHref = null;
+                string? existingRewriteUrl = null;
+
+                bool isAngularRole =
+                    roleDisplayName.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase) ||
+                    roleDisplayName.Equals("eSubpoena", StringComparison.OrdinalIgnoreCase);
+
+                if (isAngularRole && Directory.Exists(rolePath))
+                {
+                    var prevIndex = Path.Combine(rolePath, @"app\index.html");
+                    if (File.Exists(prevIndex))
+                        existingBaseHref = TryReadExistingBaseHref(prevIndex, Report, siteTag, roleDisplayName);
+
+                    var prevAppCfg = Path.Combine(rolePath, @"app\web.config");
+                    if (File.Exists(prevAppCfg))
+                        existingRewriteUrl = TryReadExistingRewriteUrl(prevAppCfg, Report, siteTag, roleDisplayName);
+                }
+
                 Report($"{siteTag}: Updating {roleDisplayName}- {rolePath}");
 
                 // Record whether previous role folder had config.json
                 var prevCfg = Path.Combine(rolePath, @"app\environments\config.json");
-                if (RequiresAppEnvironmentsConfig(roleDisplayName) && !File.Exists(prevCfg))
-                    Report($"{siteTag}[Config]:  Previous build missing app\\environments\\config.json for {roleDisplayName}.");
+                bool wasNonAngular = RequiresAppEnvironmentsConfig(roleDisplayName) && !File.Exists(prevCfg);
+                if (wasNonAngular)
+                    Report($"***{siteTag}[ANGULAR]: Angular Files missing - {rolePath}. ***");
 
                 var ext = Path.GetExtension(archivePath).ToLowerInvariant();
                 if (ext != ".zip" && ext != ".7z")
@@ -521,26 +547,53 @@ namespace TheTool
 
                 try { if (File.Exists(dstArchive)) File.Delete(dstArchive); } catch { }
 
-                // If still missing, try to seed ONLY config.json from this role's archive 
+                // Track whether we had to seed config.json
+                bool configSeeded = false;
                 var newCfg = Path.Combine(rolePath, @"app\environments\config.json");
                 if (RequiresAppEnvironmentsConfig(roleDisplayName) && !File.Exists(newCfg))
-                    TrySeedSingleConfigFromArchive(archivePath, rolePath, onProgress);
+                {
+                    configSeeded = TrySeedSingleConfigFromArchive(archivePath, rolePath, onProgress);
+                }
+
+                // Non-Angular → Angular bootstrap (CIS/eSub only)
+                if (isAngularRole && wasNonAngular)
+                {
+                    try
+                    {
+                        if (TryComputeAngularBaseFromDal(rolePath, roleDisplayName, siteTag, Report,
+                                                         out var dalBaseUrl, out var dalSiteTag))
+                        {
+                            EnsureAngularSiteUrlKey(rolePath, roleDisplayName, dalBaseUrl, dalSiteTag, siteTag, Report);
+                            CustomizeAngularConfigJson(rolePath, roleDisplayName, dalBaseUrl, dalSiteTag, siteTag, Report);
+                        }
+                        else
+                        {
+                            Report($"{siteTag}{roleDisplayName}[Config]: PBKDAL.DataAccess not usable; skipping AngularSiteUrl + config.json bootstrap.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Report($"{siteTag}{roleDisplayName}[Config]: Non-Angular→Angular bootstrap failed: {ex.Message}");
+                    }
+                }
+
 
                 // Post-deploy rewrites (CIS/eSub only)
                 try
                 {
-                    if (roleDisplayName.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase) ||
-                        roleDisplayName.Equals("eSubpoena", StringComparison.OrdinalIgnoreCase))
+                    if (isAngularRole)
                     {
-                        string siteTagLocal = $"{state}{client}";
-                        UpdateExternalIndexBaseHref(rolePath, siteTagLocal, Report, roleDisplayName);
-                        UpdateExternalRewriteAction(rolePath, siteTagLocal, Report, roleDisplayName);
+                        UpdateExternalIndexBaseHref(rolePath, siteTag, Report, roleDisplayName, existingBaseHref);
+                        UpdateExternalRewriteAction(rolePath, siteTag, Report, roleDisplayName, existingRewriteUrl);
                     }
                 }
                 catch (Exception ex)
                 {
-                    Report($"{state}{client}[{roleDisplayName}][ERROR]: Post-deploy rewrites failed: {ex.Message}");
+                    Report($"{siteTag}[{roleDisplayName}][ERROR]: Post-deploy rewrites failed: {ex.Message}");
                 }
+
+                // Manual-review flags for missing / seeded Angular bits + primary web.config
+                EmitManualReviewFlags(roleDisplayName, rolePath, configSeeded);
             }
 
             static void TryBackupFolder(string sourceDir, string archivePath, Action<string> log)
@@ -577,6 +630,214 @@ namespace TheTool
                 }
             }
 
+            static bool TryComputeAngularBaseFromDal(
+    string roleRootPath,
+    string roleDisplay,
+    string siteTagLocal,
+    Action<string> log,
+    out string dalBaseUrl,
+    out string dalSiteTag)
+            {
+                dalBaseUrl = string.Empty;
+                dalSiteTag = siteTagLocal;
+
+                try
+                {
+                    string rootCfg = Path.Combine(roleRootPath, "web.config");
+                    if (!File.Exists(rootCfg))
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: Root web.config not found at '{rootCfg}'.");
+                        return false;
+                    }
+
+                    var doc = XDocument.Load(rootCfg, LoadOptions.PreserveWhitespace);
+                    var appSettings = doc.Root?.Element("appSettings");
+                    if (appSettings == null)
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: appSettings missing in root web.config.");
+                        return false;
+                    }
+
+                    var dalAdd = appSettings.Elements("add")
+                        .FirstOrDefault(e => string.Equals((string?)e.Attribute("key"), "PBKDAL.DataAccess", StringComparison.OrdinalIgnoreCase));
+
+                    if (dalAdd == null)
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: PBKDAL.DataAccess key not found in root web.config.");
+                        return false;
+                    }
+
+                    string? url = (string?)dalAdd.Attribute("value");
+                    if (string.IsNullOrWhiteSpace(url))
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: PBKDAL.DataAccess value is empty.");
+                        return false;
+                    }
+
+                    // strip query/fragment
+                    var main = url.Split('?', '#')[0];
+
+                    int idx = main.IndexOf("/DataAccess.asmx", StringComparison.OrdinalIgnoreCase);
+                    if (idx < 0)
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: PBKDAL.DataAccess URL does not contain '/DataAccess.asmx'.");
+                        return false;
+                    }
+
+                    string beforeAsm = main.Substring(0, idx); // .../{SiteTag}DataAccess
+                    int slash = beforeAsm.LastIndexOf('/');
+                    if (slash < 0 || slash == beforeAsm.Length - 1)
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: Unable to parse folder from PBKDAL.DataAccess URL.");
+                        return false;
+                    }
+
+                    string folder = beforeAsm.Substring(slash + 1); // e.g. OHFartDataAccess
+
+                    string? suffix = null;
+                    if (folder.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase))
+                        suffix = "PBKDataAccess";
+                    else if (folder.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase))
+                        suffix = "DataAccess";
+
+                    if (suffix == null || folder.Length <= suffix.Length)
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: Unable to derive SiteTag from PBKDAL.DataAccess folder '{folder}'.");
+                        return false;
+                    }
+
+                    dalSiteTag = folder.Substring(0, folder.Length - suffix.Length); // e.g. OHFart
+                    dalBaseUrl = beforeAsm.Substring(0, slash + 1);                  // e.g. https://hosted.../
+
+                    //log($"{siteTagLocal}{roleDisplay}[Config]: Parsed PBKDAL.DataAccess → base='{dalBaseUrl}', siteTag='{dalSiteTag}'.");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    log($"{siteTagLocal}{roleDisplay}[Config]: Failed to parse PBKDAL.DataAccess: {ex.Message}");
+                    dalBaseUrl = string.Empty;
+                    dalSiteTag = siteTagLocal;
+                    return false;
+                }
+            }
+
+            static void EnsureAngularSiteUrlKey(
+                string roleRootPath,
+                string roleDisplay,
+                string dalBaseUrl,
+                string dalSiteTag,
+                string siteTagLocal,
+                Action<string> log)
+            {
+                try
+                {
+                    string rootCfg = Path.Combine(roleRootPath, "web.config");
+                    if (!File.Exists(rootCfg))
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: Root web.config not found at '{rootCfg}' (AngularSiteUrl).");
+                        return;
+                    }
+
+                    var doc = XDocument.Load(rootCfg, LoadOptions.PreserveWhitespace);
+                    var appSettings = doc.Root?.Element("appSettings");
+                    if (appSettings == null)
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: appSettings missing in root web.config (AngularSiteUrl).");
+                        return;
+                    }
+
+                    bool exists = appSettings.Elements("add")
+                        .Any(e => string.Equals((string?)e.Attribute("key"), "AngularSiteUrl", StringComparison.OrdinalIgnoreCase));
+
+                    if (exists)
+                    {
+                        // leave existing value alone
+                        return;
+                    }
+
+                    string appName = roleDisplay.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)
+                        ? "CaseInfoSearch"
+                        : "eSubpoena";
+
+                    string appSegment = dalSiteTag + appName;
+                    string angularUrl = dalBaseUrl + appSegment + "/app";
+
+                    var newAdd = new XElement("add",
+                        new XAttribute("key", "AngularSiteUrl"),
+                        new XAttribute("value", angularUrl));
+
+                    // "Just after <appSettings>" → first child in appSettings
+                    appSettings.AddFirst(newAdd);
+                    appSettings.AddFirst(new XText(Environment.NewLine + "        "));
+
+                    doc.Save(rootCfg);
+
+                    log($"{siteTagLocal}{roleDisplay}[Config]: Added AngularSiteUrl='{angularUrl}' to root web.config.");
+                }
+                catch (Exception ex)
+                {
+                    log($"{siteTagLocal}{roleDisplay}[Config]: Failed to add AngularSiteUrl: {ex.Message}");
+                }
+            }
+
+            static void CustomizeAngularConfigJson(
+                string roleRootPath,
+                string roleDisplay,
+                string dalBaseUrl,
+                string dalSiteTag,
+                string siteTagLocal,
+                Action<string> log)
+            {
+                try
+                {
+                    string cfgPath = Path.Combine(roleRootPath, @"app\environments\config.json");
+                    if (!File.Exists(cfgPath))
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: app\\environments\\config.json not found; skipping JSON customization.");
+                        return;
+                    }
+
+                    string json = File.ReadAllText(cfgPath);
+
+                    string appName = roleDisplay.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)
+                        ? "CaseInfoSearch"
+                        : "eSubpoena";
+
+                    string appSegment = dalSiteTag + appName;
+                    string appBase = dalBaseUrl + appSegment; // no trailing slash
+
+                    string rootUrl = appBase + "/app";
+                    string apiUrl = appBase + "/";
+                    string loginUrl = appBase + "/#/login";
+                    string baseHref = $"/{dalSiteTag}{appName}/app/";
+                    string buildVersion = appBase + "/buildVersion.json";
+
+                    // Straight string replaces on the known keys
+                    json = Regex.Replace(json, "\"rootUrl\"\\s*:\\s*\"[^\"]*\"", $"\"rootUrl\": \"{EscapeJsonString(rootUrl)}\"");
+                    json = Regex.Replace(json, "\"url\"\\s*:\\s*\"[^\"]*\"", $"\"url\": \"{EscapeJsonString(apiUrl)}\"");
+                    json = Regex.Replace(json, "\"loginUrl\"\\s*:\\s*\"[^\"]*\"", $"\"loginUrl\": \"{EscapeJsonString(loginUrl)}\"");
+                    json = Regex.Replace(json, "\"baseHref\"\\s*:\\s*\"[^\"]*\"", $"\"baseHref\": \"{EscapeJsonString(baseHref)}\"");
+                    json = Regex.Replace(json, "\"buildVersion\"\\s*:\\s*\"[^\"]*\"", $"\"buildVersion\": \"{EscapeJsonString(buildVersion)}\"");
+
+                    File.WriteAllText(cfgPath, json);
+
+                    log($"{siteTagLocal}{roleDisplay}[Config]: Updated app\\environments\\config.json with site-specific URLs.");
+                }
+                catch (Exception ex)
+                {
+                    log($"{siteTagLocal}{roleDisplay}[Config]: Failed to update config.json: {ex.Message}");
+                }
+            }
+
+            static string EscapeJsonString(string value)
+            {
+                return (value ?? string.Empty)
+                    .Replace("\\", "\\\\")
+                    .Replace("\"", "\\\"");
+            }
+
+
+
             static void RepointExternalPoolsIfPresent(
                 string stateLocal,
                 string clientLocal,
@@ -609,7 +870,119 @@ namespace TheTool
                 TryRepointPool("eSubpoena", esRootLocal);
                 TryRepointPool(daFolderLocal, daRootLocal);
             }
+
+
+            void EmitManualReviewFlags(string roleDisplayName, string roleRootPath, bool configSeeded)
+            {
+                if (string.IsNullOrWhiteSpace(roleRootPath))
+                    return;
+
+                string extRootForLog = externalRoot;
+
+                // Primary external web.config at the role root
+                string primaryWeb = Path.Combine(roleRootPath, "web.config");
+                if (!File.Exists(primaryWeb))
+                {
+                    Report($"{siteTag}[ManualReview]: External root '{extRootForLog}'. {roleDisplayName} primary web.config missing at '{primaryWeb}'. Please review / recreate manually.");
+                }
+
+                // Only Angular roles (CIS / eSub) have the app folder expectations
+                bool isAngularRole = RequiresAppEnvironmentsConfig(roleDisplayName);
+                if (!isAngularRole)
+                    return;
+
+                string indexPath = Path.Combine(roleRootPath, @"app\index.html");
+                string appWebPath = Path.Combine(roleRootPath, @"app\web.config");
+                string cfgPath = Path.Combine(roleRootPath, @"app\environments\config.json");
+
+                if (!File.Exists(indexPath))
+                {
+                    Report($"{siteTag}[ManualReview]: External root '{extRootForLog}'. {roleDisplayName} missing app\\index.html at '{indexPath}'.");
+                }
+
+                if (!File.Exists(appWebPath))
+                {
+                    Report($"{siteTag}[ManualReview]: External root '{extRootForLog}'. {roleDisplayName} missing app\\web.config at '{appWebPath}'.");
+                }
+
+                if (configSeeded || !File.Exists(cfgPath))
+                {
+                    string reason = configSeeded ? "was seeded from build" : "is missing";
+                    Report($"{siteTag}[ManualReview]: External root '{extRootForLog}'. {roleDisplayName} app\\environments\\config.json {reason} at '{cfgPath}'. Review and update manually.");
+                }
+            }
+
+            static string? TryReadExistingBaseHref(string indexPath, Action<string> log, string siteTagLocal, string roleDisplay)
+            {
+                try
+                {
+                    string html = File.ReadAllText(indexPath);
+                    var m = Regex.Match(html, @"<base\s+[^>]*href\s*=\s*""([^""]+)""", RegexOptions.IgnoreCase);
+                    if (m.Success)
+                        return m.Groups[1].Value;
+
+                    log($"{siteTagLocal}{roleDisplay}[Config]: Existing app\\index.html did not contain a <base href=\"...\"> tag.");
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    log($"{siteTagLocal}{roleDisplay}[Config]: Failed to read existing app\\index.html: {ex.Message}");
+                    return null;
+                }
+            }
+
+            static string? TryReadExistingRewriteUrl(string cfgPath, Action<string> log, string siteTagLocal, string roleDisplay)
+            {
+                try
+                {
+                    var doc = XDocument.Load(cfgPath, LoadOptions.PreserveWhitespace);
+
+                    var actions = doc.Descendants()
+                                     .Where(e => string.Equals(e.Name.LocalName, "action", StringComparison.OrdinalIgnoreCase))
+                                     .ToList();
+
+                    if (actions.Count == 0)
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: Existing app\\web.config had no <action> elements.");
+                        return null;
+                    }
+
+                    bool isCis = roleDisplay.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase);
+                    string appName = isCis ? "CaseInfoSearch" : "eSubpoena";
+
+                    var target = actions.FirstOrDefault(a =>
+                    {
+                        var urlAttr = a.Attributes().FirstOrDefault(x => string.Equals(x.Name.LocalName, "url", StringComparison.OrdinalIgnoreCase));
+                        if (urlAttr is null) return false;
+                        var v = urlAttr.Value ?? string.Empty;
+                        return v.StartsWith("/", StringComparison.OrdinalIgnoreCase)
+                               && v.IndexOf(appName, StringComparison.OrdinalIgnoreCase) >= 0;
+                    })
+                    ?? actions.FirstOrDefault(a =>
+                           a.Attributes().Any(x => string.Equals(x.Name.LocalName, "url", StringComparison.OrdinalIgnoreCase)));
+
+                    if (target == null)
+                    {
+                        log($"{siteTagLocal}{roleDisplay}[Config]: Existing app\\web.config had no suitable <action url=\"...\"> element.");
+                        return null;
+                    }
+
+                    var urlAttrFinal = target.Attributes()
+                                             .First(x => string.Equals(x.Name.LocalName, "url", StringComparison.OrdinalIgnoreCase));
+
+                    return urlAttrFinal.Value;
+                }
+                catch (Exception ex)
+                {
+                    log($"{siteTagLocal}{roleDisplay}[Config]: Failed to read existing app\\web.config: {ex.Message}");
+                    return null;
+                }
+            }
         }
+
+
+
+
 
         // =====================================================================
         //                       CONFIG CHANGES
@@ -728,29 +1101,58 @@ namespace TheTool
             }
         }
 
-        public static void UpdateExternalIndexBaseHref(string rolePath, string siteTag, Action<string>? log, string roleDisplay)
+        public static void UpdateExternalIndexBaseHref(
+            string rolePath,
+            string siteTag,
+            Action<string>? log,
+            string roleDisplay,
+            string? existingBaseHref = null)
         {
             // rolePath: ...\CaseInfoSearch or ...\eSubpoena
             try
             {
                 string indexPath = Path.Combine(rolePath, @"app\index.html");
-                if (!File.Exists(indexPath)) { log?.Invoke($"{siteTag}{roleDisplay}[Skip]: app\\index.html not found."); return; }
+                if (!File.Exists(indexPath))
+                {
+                    log?.Invoke($"{siteTag}{roleDisplay}[Skip]: app\\index.html not found.");
+                    return;
+                }
 
                 string html = File.ReadAllText(indexPath);
                 string original = html;
 
-                string appName = rolePath.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase) ? "CaseInfoSearch" : "eSubpoena";
-
-                var rx = new Regex($@"(<base\s+href=""/){appName}[^/""]*(/app/""\s*>)",
-                                   RegexOptions.IgnoreCase);
-
-                if (!rx.IsMatch(html))
+                if (!string.IsNullOrEmpty(existingBaseHref))
                 {
-                    log?.Invoke($"{siteTag}{roleDisplay}[Skip]: Expected '<base href=\"/{appName}*/app/\">' not found");
-                    return;
-                }
+                    // Reuse whatever href was previously configured
+                    var rxAnyBase = new Regex(@"(<base\s+[^>]*href\s*="")[^""]+(""[^>]*>)",
+                                              RegexOptions.IgnoreCase);
 
-                html = rx.Replace(html, $"$1{siteTag}{appName}$2", 1);
+                    if (!rxAnyBase.IsMatch(html))
+                    {
+                        log?.Invoke($"{siteTag}{roleDisplay}[Skip]: <base href=\"...\"> not found in new app\\index.html (cannot reuse existing value).");
+                        return;
+                    }
+
+                    html = rxAnyBase.Replace(html, $"$1{existingBaseHref}$2", 1);
+                }
+                else
+                {
+                    // Fall back to the "old way": construct from siteTag + appName
+                    string appName = rolePath.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)
+                        ? "CaseInfoSearch"
+                        : "eSubpoena";
+
+                    var rx = new Regex($@"(<base\s+href=""/){appName}[^/""]*(/app/""\s*>)",
+                                       RegexOptions.IgnoreCase);
+
+                    if (!rx.IsMatch(html))
+                    {
+                        log?.Invoke($"{siteTag}{roleDisplay}[Skip]: Expected '<base href=\"/{appName}*/app/\">' not found");
+                        return;
+                    }
+
+                    html = rx.Replace(html, $"$1{siteTag}{appName}$2", 1);
+                }
 
                 if (string.Equals(html, original, StringComparison.Ordinal))
                 {
@@ -766,12 +1168,22 @@ namespace TheTool
             }
         }
 
-        public static void UpdateExternalRewriteAction(string rolePath, string siteTag, Action<string>? log, string roleDisplay)
+
+        public static void UpdateExternalRewriteAction(
+    string rolePath,
+    string siteTag,
+    Action<string>? log,
+    string roleDisplay,
+    string? existingUrl = null)
         {
             try
             {
                 string cfgPath = Path.Combine(rolePath, @"app\web.config");
-                if (!File.Exists(cfgPath)) { log?.Invoke($"{siteTag}{roleDisplay}[Skip]: app\\web.config not found."); return; }
+                if (!File.Exists(cfgPath))
+                {
+                    log?.Invoke($"{siteTag}{roleDisplay}[Skip]: app\\web.config not found.");
+                    return;
+                }
 
                 var doc = XDocument.Load(cfgPath, LoadOptions.PreserveWhitespace);
 
@@ -787,7 +1199,6 @@ namespace TheTool
 
                 bool isCis = rolePath.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase);
                 string appName = isCis ? "CaseInfoSearch" : "eSubpoena";
-                string desiredUrl = $"/{siteTag}{appName}/app/";
 
                 var target = actions.FirstOrDefault(a =>
                 {
@@ -805,14 +1216,29 @@ namespace TheTool
                     return;
                 }
 
-                var url = target.Attributes().First(x => string.Equals(x.Name.LocalName, "url", StringComparison.OrdinalIgnoreCase));
-                if (string.Equals(url.Value, desiredUrl, StringComparison.Ordinal))
+                var urlAttrFinal = target.Attributes()
+                                         .First(x => string.Equals(x.Name.LocalName, "url", StringComparison.OrdinalIgnoreCase));
+
+                string desiredUrl;
+
+                if (!string.IsNullOrEmpty(existingUrl))
+                {
+                    // Reuse whatever URL was previously configured
+                    desiredUrl = existingUrl;
+                }
+                else
+                {
+                    // Fall back to the "old way": construct from siteTag + appName
+                    desiredUrl = $"/{siteTag}{appName}/app/";
+                }
+
+                if (string.Equals(urlAttrFinal.Value, desiredUrl, StringComparison.Ordinal))
                 {
                     log?.Invoke($"{siteTag}{roleDisplay}: app\\web.config unchanged.");
                     return;
                 }
 
-                url.Value = desiredUrl;
+                urlAttrFinal.Value = desiredUrl;
                 doc.Save(cfgPath);
             }
             catch (Exception ex)
@@ -820,6 +1246,7 @@ namespace TheTool
                 log?.Invoke($"{siteTag}{roleDisplay}[Error]: web.config update failed: {ex.Message}");
             }
         }
+
 
         // =====================================================================
         //                              I/O UTILITIES
@@ -1278,36 +1705,21 @@ namespace TheTool
 
         private static void CleanupBackupsKeepMostRecent(string basePath, string state, string client)
         {
-            try
+            var prefix = (state + client) + "_";
+            var zips = Directory.EnumerateFiles(basePath, "*.zip", SearchOption.TopDirectoryOnly)
+                                .Where(p => Path.GetFileName(p)
+                                    .StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                                .ToList();
+            if (zips.Count <= 1) return;
+
+            // Use the actual modified date for ordering
+            var ordered = zips.OrderByDescending(File.GetLastWriteTimeUtc).ToList();
+
+            // Keep the most recent, delete the rest
+            foreach (var old in ordered.Skip(1))
             {
-                var prefix = (state + client) + "_";
-                var zips = Directory.EnumerateFiles(basePath, "*.zip", SearchOption.TopDirectoryOnly)
-                                    .Where(p => Path.GetFileName(p)
-                                        .StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                                    .ToList();
-                if (zips.Count <= 1) return;
-
-                DateTime ExtractNameDateOrMin(string path)
-                {
-                    var name = Path.GetFileNameWithoutExtension(path);
-                    var idx = name.LastIndexOf('_');
-                    if (idx >= 0 && name.Length >= idx + 1 + 8)
-                    {
-                        var stamp = name.Substring(idx + 1, 8);
-                        if (DateTime.TryParseExact(stamp, "MMddyyyy", null,
-                            System.Globalization.DateTimeStyles.None, out var dt))
-                            return dt;
-                    }
-                    return File.GetLastWriteTimeUtc(path);
-                }
-
-                var ordered = zips.OrderByDescending(ExtractNameDateOrMin).ToList();
-                foreach (var p in ordered.Skip(1))
-                {
-                    try { File.Delete(p); } catch { }
-                }
+                try { File.Delete(old); } catch { }
             }
-            catch { }
         }
 
         private static void ForceCopyPreservedFiles(string prevPath, string newPath)

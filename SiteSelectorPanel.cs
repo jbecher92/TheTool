@@ -98,7 +98,9 @@ namespace TheTool
         //}
 
 
-        public void ApplyRoleAvailability(Dictionary<string, (bool HasCIS, bool HasESub, bool HasDA)> availability)
+        public void ApplyRoleAvailability(
+    Dictionary<string, (bool HasCIS, bool HasESub, bool HasDA)> availability,
+    ISet<string> prodSites)
         {
             if (availability == null || availability.Count == 0) return;
 
@@ -107,18 +109,25 @@ namespace TheTool
                 var key = row.Cells["colSiteName"].Value?.ToString() ?? string.Empty;
                 if (string.IsNullOrWhiteSpace(key)) continue;
 
-                if (!availability.TryGetValue(key, out var roles)) continue;
+                // Prod availability: does a base app pool with this exact name exist?
+                bool hasProd = prodSites != null && prodSites.Contains(key);
 
-                // Columns assumed: colExt == CaseInfoSearch, colESub == eSubpoena.
-                // If you have a dedicated DA column, handle it similarly; if not, you can ignore DA.
+                // External role availability (CIS/eSub/DA) from the availability map
+                availability.TryGetValue(key, out var roles);
+
+                // colProd => Production
+                SetCheckboxReadOnly(row.Cells["colProd"] as DataGridViewCheckBoxCell, !hasProd);
+
+                // colExt => CaseInfoSearch/EAP
                 SetCheckboxReadOnly(row.Cells["colExt"] as DataGridViewCheckBoxCell, !roles.HasCIS);
+
+                // colESub => eSubpoena
                 SetCheckboxReadOnly(row.Cells["colESub"] as DataGridViewCheckBoxCell, !roles.HasESub);
 
-                // OPTIONAL: If you show DA as a separate checkbox column (e.g., colDA),
-                // uncomment this line and ensure the column exists.
-                // SetCheckboxReadOnly(row.Cells["colDA"]   as DataGridViewCheckBoxCell,  !roles.HasDA);
+                // SetCheckboxReadOnly(row.Cells["colDA"] as DataGridViewCheckBoxCell, !roles.HasDA);
             }
         }
+
 
         // Small helper to visually gray-out and disable a checkbox cell
         private static void SetCheckboxReadOnly(DataGridViewCheckBoxCell? cell, bool makeReadOnly)

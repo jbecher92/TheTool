@@ -1,6 +1,7 @@
 ﻿using Microsoft.Web.Administration;
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -103,13 +104,36 @@ namespace TheTool
 
             confirmForm.RunConfirmed += async (finalSelections) =>
             {
+                // --- persistent log setup -----------------------------------------
+                string? logFilePath;
+                var runLogWriter = CreatePersistentLogFile(out logFilePath);
+                var logLock = new object();
+
                 string prodZip = txtProdPath.Text;
                 string eapZip = txtEapPath.Text;
                 string esubZip = txtESubPath.Text;
                 string dataAccessZip = txtDataAccessPath.Text;
 
+                // Combined logger: writes to file (if available) + confirmation UI
                 Action<string> log = msg =>
                 {
+                    // 1) persistent file log
+                    if (runLogWriter != null)
+                    {
+                        try
+                        {
+                            lock (logLock)
+                            {
+                                runLogWriter.WriteLine($"{DateTime.Now:HH:mm:ss} {msg}");
+                            }
+                        }
+                        catch
+                        {
+                            // ignore file-logging failures but keep UI logging alive
+                        }
+                    }
+
+                    // 2) on-screen log
                     try
                     {
                         if (confirmForm.IsHandleCreated && confirmForm.InvokeRequired)
@@ -117,16 +141,24 @@ namespace TheTool
                         else
                             confirmForm.AppendLog(msg);
                     }
-                    catch { /* ignore */ }
+                    catch
+                    {
+                        // swallow UI logging errors
+                    }
                 };
 
                 try
                 {
+                    // Resolve global root once (same as before)
                     string resolvedRoot = NormalizeRoot(
-                        ResolveRootPath(appConfig.DeploymentFlavor ?? "prod", appConfig.SitesRootPath ?? string.Empty));
+                        ResolveRootPath(appConfig.DeploymentFlavor ?? "prod",
+                                        appConfig.SitesRootPath ?? string.Empty));
 
-                    await RunDeploymentAsync(finalSelections, prodZip, eapZip, esubZip, dataAccessZip,
-                                             isCreate: false, log: log, confirmCtx: confirmForm,
+                    await RunDeploymentAsync(finalSelections,
+                                             prodZip, eapZip, esubZip, dataAccessZip,
+                                             isCreate: false,
+                                             log: log,
+                                             confirmCtx: confirmForm,
                                              resolvedRoot: resolvedRoot);
 
                     string completionMsg;
@@ -152,13 +184,106 @@ namespace TheTool
                 }
                 catch (Exception ex)
                 {
-                    confirmForm.AppendLog("ERROR: " + ex.Message);
+                    log("ERROR: " + ex.Message);
                     confirmForm.MarkComplete("Failed.");
+                }
+                finally
+                {
+                    if (runLogWriter != null)
+                    {
+                        try { runLogWriter.Dispose(); } catch { }
+                    }
                 }
             };
 
             confirmForm.Show(this);
         }
+
+        /// <summary>
+        /// Creates Logs\{TodayTag}\Run{n}\log.txt under the executable folder,
+        /// purges log day-folders older than 30 days, and returns a StreamWriter
+        /// for the log file. Returns null if anything fails.
+        /// </summary>
+        /// <summary>
+        /// Creates Logs\{TodayTag}\log_{n}.txt under the executable folder,
+        /// purges any log day folders older than 30 days,
+        /// and returns a StreamWriter for that log file.
+        /// </summary>
+        private static StreamWriter? CreatePersistentLogFile(out string? logFilePath)
+        {
+            logFilePath = null;
+
+            try
+            {
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string logsRoot = Path.Combine(baseDir, "Logs");
+                Directory.CreateDirectory(logsRoot);
+
+                // purge old folders first
+                PurgeOldLogFolders(logsRoot, TimeSpan.FromDays(30));
+
+                string todayTag = TodayTag();
+                string todayFolder = Path.Combine(logsRoot, todayTag);
+                Directory.CreateDirectory(todayFolder);
+
+                // find next available log_N.txt
+                int n = 1;
+                string logName;
+                do
+                {
+                    logName = $"log_{n}.txt";
+                    n++;
+                } while (File.Exists(Path.Combine(todayFolder, logName)));
+
+                logFilePath = Path.Combine(todayFolder, logName);
+
+                var fs = new FileStream(logFilePath, FileMode.Create, FileAccess.Write, FileShare.Read);
+                return new StreamWriter(fs) { AutoFlush = true };
+            }
+            catch
+            {
+                logFilePath = null;
+                return null;
+            }
+        }
+
+
+        /// <summary>
+        /// Deletes date folders (MMddyyyy) under logsRoot that are older than maxAge.
+        /// </summary>
+        private static void PurgeOldLogFolders(string logsRoot, TimeSpan maxAge)
+        {
+            try
+            {
+                if (!Directory.Exists(logsRoot))
+                    return;
+
+                foreach (var dir in Directory.GetDirectories(logsRoot))
+                {
+                    string name = Path.GetFileName(dir);
+
+                    // Expect folder names like "MMddyyyy"
+                    if (name.Length != 8 || !name.All(char.IsDigit))
+                        continue;
+
+                    if (!DateTime.TryParseExact(name, "MMddyyyy", CultureInfo.InvariantCulture,
+                            DateTimeStyles.None, out var day))
+                        continue;
+
+                    if ((DateTime.Now.Date - day.Date) > maxAge)
+                    {
+                        try { Directory.Delete(dir, true); }
+                        catch { /* ignore purge failures */ }
+                    }
+                }
+            }
+            catch
+            {
+                // never let log maintenance break the main flow
+            }
+        }
+
+
 
         private void BtnSiteCreator_Click_1(object sender, EventArgs e)
         {
@@ -461,59 +586,66 @@ namespace TheTool
                 await IISManager.RunWithPoolsStoppedAsync(poolsAffected.ToArray(), work, log);
 
             // Final IIS binding: use the same 'tag' computed above to avoid midnight rollover issues.
-            foreach (var plan in sitePlans)
+            // Only perform IIS binding when creating new sites
+            if (isCreate)
             {
-                if (plan.DoProd)
+                // Final IIS binding: use the same 'tag' computed above to avoid midnight rollover issues.
+                foreach (var plan in sitePlans)
                 {
-                    if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.SiteName, out var phys))
+                    if (plan.DoProd)
                     {
-                        string prodBase = NormalizeIisBase(phys);
-                        IISManager.EnsureAppUnderDefault(
-                            plan.State + plan.Client,
-                            Path.Combine(prodBase, tag),
-                            plan.SiteName);
+                        if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.SiteName, out var phys))
+                        {
+                            string prodBase = NormalizeIisBase(phys);
+                            IISManager.EnsureAppUnderDefault(
+                                plan.State + plan.Client,
+                                Path.Combine(prodBase, tag),
+                                plan.SiteName);
+                        }
                     }
-                }
-                if (plan.DoEap || plan.DoESub)
-                {
-                    string? externalRootFromIis = null;
-                    if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "CaseInfoSearch", out var cisPath))
-                        externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(cisPath));
-                    else if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "eSubpoena", out var esuPath))
-                        externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(esuPath));
-                    else if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "DataAccess", out var daPath))
-                        externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(daPath));
-                    else if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "PBKDataAccess", out var pdaPath))
-                        externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(pdaPath));
 
-                    if (!string.IsNullOrWhiteSpace(externalRootFromIis))
+                    if (plan.DoEap || plan.DoESub)
                     {
-                        if (plan.DoEap)
-                        {
-                            string eapName = plan.State + plan.Client + "CaseInfoSearch";
-                            IISManager.EnsureAppUnderDefault(
-                                eapName,
-                                Path.Combine(externalRootFromIis!, "CaseInfoSearch"),
-                                eapName);
-                        }
-                        if (plan.DoESub)
-                        {
-                            string esubName = plan.State + plan.Client + "eSubpoena";
-                            IISManager.EnsureAppUnderDefault(
-                                esubName,
-                                Path.Combine(externalRootFromIis!, "eSubpoena"),
-                                esubName);
-                        }
+                        string? externalRootFromIis = null;
+                        if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "CaseInfoSearch", out var cisPath))
+                            externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(cisPath));
+                        else if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "eSubpoena", out var esuPath))
+                            externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(esuPath));
+                        else if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "DataAccess", out var daPath))
+                            externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(daPath));
+                        else if (IISManager.IisReadHelpers.TryGetPhysicalPathForPool(plan.State + plan.Client + "PBKDataAccess", out var pdaPath))
+                            externalRootFromIis = Path.GetDirectoryName(NormalizeIisBase(pdaPath));
 
-                        string daFolder = Directory.Exists(Path.Combine(externalRootFromIis!, "PBKDataAccess")) ? "PBKDataAccess" : "DataAccess";
-                        string daName = plan.State + plan.Client + daFolder;
-                        IISManager.EnsureAppUnderDefault(
-                            daName,
-                            Path.Combine(externalRootFromIis!, daFolder),
-                            daName);
+                        if (!string.IsNullOrWhiteSpace(externalRootFromIis))
+                        {
+                            if (plan.DoEap)
+                            {
+                                string eapName = plan.State + plan.Client + "CaseInfoSearch";
+                                IISManager.EnsureAppUnderDefault(
+                                    eapName,
+                                    Path.Combine(externalRootFromIis!, "CaseInfoSearch"),
+                                    eapName);
+                            }
+                            if (plan.DoESub)
+                            {
+                                string esubName = plan.State + plan.Client + "eSubpoena";
+                                IISManager.EnsureAppUnderDefault(
+                                    esubName,
+                                    Path.Combine(externalRootFromIis!, "eSubpoena"),
+                                    esubName);
+                            }
+
+                            string daFolder = Directory.Exists(Path.Combine(externalRootFromIis!, "PBKDataAccess")) ? "PBKDataAccess" : "DataAccess";
+                            string daName = plan.State + plan.Client + daFolder;
+                            IISManager.EnsureAppUnderDefault(
+                                daName,
+                                Path.Combine(externalRootFromIis!, daFolder),
+                                daName);
+                        }
                     }
                 }
             }
+
         }
 
 
@@ -524,80 +656,40 @@ namespace TheTool
         {
             try
             {
-                // Get all app pools (prod + externals)
+                // All app pools (prod + externals)
                 var allPools = IISManager.GetIISAppPools();
 
-                // Filter to only "main" pools for display (no externals)
-                var filtered = allPools
-                    .Where(p =>
-                        !p.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase) &&
-                        !p.EndsWith("eSubpoena", StringComparison.OrdinalIgnoreCase) &&
-                        !p.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase) &&
-                        !p.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-
-                if (filtered.Count == 0)
+                if (allPools.Count == 0)
                 {
                     MessageBox.Show("No IIS application pools were found on this machine.");
                     return;
                 }
 
-                // Build role availability map:
-                //   key = base site (e.g., "MOClient")
-                //   value = (HasCIS, HasESub, HasDA)
-                var availability = new Dictionary<string, (bool HasCIS, bool HasESub, bool HasDA)>(
+                // Role availability keyed by base name (ARGiga, ARGigaCity, etc.)
+                var availability = BuildRoleAvailability(allPools);
+
+                // Set of base pools that actually exist (for enabling Prod)
+                var prodSites = new HashSet<string>(
+                    allPools.Where(p =>
+                        !p.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase) &&
+                        !p.EndsWith("eSubpoena", StringComparison.OrdinalIgnoreCase) &&
+                        !p.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase) &&
+                        !p.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase)),
                     StringComparer.OrdinalIgnoreCase);
 
-                foreach (var pool in allPools)
+                // One row per base site (even externals-only sites with no prod pool)
+                var siteNames = availability.Keys
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                if (siteNames.Count == 0)
                 {
-                    string key = pool;
-                    bool hasCis = false;
-                    bool hasESub = false;
-                    bool hasDa = false;
-
-                    if (pool.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase))
-                    {
-                        key = pool.Substring(0, pool.Length - "CaseInfoSearch".Length);
-                        hasCis = true;
-                    }
-                    else if (pool.EndsWith("eSubpoena", StringComparison.OrdinalIgnoreCase))
-                    {
-                        key = pool.Substring(0, pool.Length - "eSubpoena".Length);
-                        hasESub = true;
-                    }
-                    else if (pool.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase))
-                    {
-                        key = pool.Substring(0, pool.Length - "PBKDataAccess".Length);
-                        hasDa = true;
-                    }
-                    else if (pool.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase))
-                    {
-                        key = pool.Substring(0, pool.Length - "DataAccess".Length);
-                        hasDa = true;
-                    }
-                    else
-                    {
-                        // Ensure the base pool itself has an entry, even if no externals exist
-                        if (!availability.ContainsKey(key))
-                            availability[key] = (HasCIS: false, HasESub: false, HasDA: false);
-                        continue;
-                    }
-
-                    if (!availability.TryGetValue(key, out var existing))
-                        existing = (HasCIS: false, HasESub: false, HasDA: false);
-
-                    availability[key] = (
-                        HasCIS: existing.HasCIS || hasCis,
-                        HasESub: existing.HasESub || hasESub,
-                        HasDA: existing.HasDA || hasDa
-                    );
+                    MessageBox.Show("No IIS application pools matching PBK naming were found on this machine.");
+                    return;
                 }
 
-                // Load visible sites into the grid
-                siteSelectorPanel.LoadSites(filtered);
-
-                // Apply role availability so EAP/eSub checkboxes are disabled where app pools are missing
-                siteSelectorPanel.ApplyRoleAvailability(availability);
+                siteSelectorPanel.LoadSites(siteNames);
+                siteSelectorPanel.ApplyRoleAvailability(availability, prodSites);
             }
             catch (UnauthorizedAccessException)
             {
@@ -622,6 +714,64 @@ namespace TheTool
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error);
             }
+        }
+
+
+
+        private static Dictionary<string, (bool HasCIS, bool HasESub, bool HasDA)>
+            BuildRoleAvailability(IEnumerable<string> allPools)
+        {
+            var dict = new Dictionary<string, (bool HasCIS, bool HasESub, bool HasDA)>(
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var pool in allPools)
+            {
+                if (string.IsNullOrWhiteSpace(pool))
+                    continue;
+
+                string key = pool;
+                bool hasCis = false, hasESub = false, hasDa = false;
+
+                if (pool.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase))
+                {
+                    key = pool.Substring(0, pool.Length - "CaseInfoSearch".Length);
+                    hasCis = true;
+                }
+                else if (pool.EndsWith("eSubpoena", StringComparison.OrdinalIgnoreCase))
+                {
+                    key = pool.Substring(0, pool.Length - "eSubpoena".Length);
+                    hasESub = true;
+                }
+                else if (pool.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase))
+                {
+                    key = pool.Substring(0, pool.Length - "PBKDataAccess".Length);
+                    hasDa = true;
+                }
+                else if (pool.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase))
+                {
+                    key = pool.Substring(0, pool.Length - "DataAccess".Length);
+                    hasDa = true;
+                }
+                else
+                {
+                    // Base/production pool (no suffix) – ensure the base key exists,
+                    // but don’t mark any external roles.
+                    if (!dict.ContainsKey(key))
+                        dict[key] = (HasCIS: false, HasESub: false, HasDA: false);
+                    continue;
+                }
+
+                if (!dict.TryGetValue(key, out var existing))
+                    existing = (HasCIS: false, HasESub: false, HasDA: false);
+
+                dict[key] = (
+                    HasCIS: existing.HasCIS || hasCis,
+                    HasESub: existing.HasESub || hasESub,
+                    HasDA: existing.HasDA || hasDa
+                );
+            }
+
+            return dict;
         }
 
 
@@ -731,25 +881,51 @@ namespace TheTool
         {
             try
             {
-                var appPools = IISManager.GetIISAppPools();
-                var filtered = appPools
-                    .Where(p =>
+                var allPools = IISManager.GetIISAppPools();
+                var availability = BuildRoleAvailability(allPools);
+
+                var prodSites = new HashSet<string>(
+                    allPools.Where(p =>
                         !p.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase) &&
                         !p.EndsWith("eSubpoena", StringComparison.OrdinalIgnoreCase) &&
                         !p.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase) &&
-                        !p.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase))
+                        !p.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase)),
+                    StringComparer.OrdinalIgnoreCase);
+
+                var siteNames = availability.Keys
+                    .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
-                siteSelectorPanel.LoadSites(filtered);
+                siteSelectorPanel.LoadSites(siteNames);
+                siteSelectorPanel.ApplyRoleAvailability(availability, prodSites);
 
+                // (Optional) reselect a site after refresh
+                if (!string.IsNullOrWhiteSpace(highlightSite))
+                {
+                    var grid = siteSelectorPanel.Controls.OfType<DataGridView>().FirstOrDefault();
+                    if (grid != null)
+                    {
+                        foreach (DataGridViewRow row in grid.Rows)
+                        {
+                            var name = row.Cells["colSiteName"].Value?.ToString();
+                            if (string.Equals(name, highlightSite, StringComparison.OrdinalIgnoreCase))
+                            {
+                                row.Selected = true;
+                                break;
+                            }
+                        }
+                    }
+                }
             }
             catch
             {
-                //refresh silently
+                // refresh silently
             }
         }
 
-       
+
+
+
 
         // note site/role for manual review 
         private void NoteForReview(string siteName, string roleLabel)
