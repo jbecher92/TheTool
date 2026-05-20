@@ -35,6 +35,7 @@
             dgvSites.AllowUserToResizeRows = false;
             dataGridViewCellStyle1.BackColor = Color.FromArgb(245, 245, 245);
             dgvSites.AlternatingRowsDefaultCellStyle = dataGridViewCellStyle1;
+            dgvSites.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
             dgvSites.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
             dgvSites.BorderStyle = BorderStyle.None;
             dgvSites.CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal;

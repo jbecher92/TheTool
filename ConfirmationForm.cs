@@ -13,6 +13,8 @@ namespace TheTool
         private Panel pnlLog = null!;
         private Label lblLogHeader = null!;
         private TextBox txtLog = null!;
+        public bool ReplaceProdTail => tailProd?.Checked == true;
+        public bool ReplaceExtTail => tailExt?.Checked == true;
 
         private enum UpdatePhase { None, Prod, Externals }
         private enum AbortMode
@@ -183,6 +185,7 @@ namespace TheTool
                 bool prod = Convert.ToBoolean(row.Cells[colProd.Index].Value ?? false);
                 bool eap = Convert.ToBoolean(row.Cells[colEAP.Index].Value ?? false);
                 bool esub = Convert.ToBoolean(row.Cells[colESub.Index].Value ?? false);
+                //bool eApi = Convert.ToBoolean(row.Cells[coleApi.Index].Value ?? false);
 
                 list.Add((siteName, prod, eap, esub));
             }
@@ -416,6 +419,11 @@ namespace TheTool
             if (!_abortRequested) return false;
             if (_abortMode != AbortMode.SkipRestAfterCurrentExternals) return false;
             return string.Equals(_currentSite, siteName ?? string.Empty, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private void label1_Click(object sender, EventArgs e)
+        {
+
         }
 
         public bool IsAbortRequested => _abortRequested;

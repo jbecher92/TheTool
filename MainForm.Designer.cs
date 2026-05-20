@@ -41,8 +41,9 @@
             // 
             // siteSelectorPanel
             // 
+            siteSelectorPanel.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
             siteSelectorPanel.Location = new Point(10, 156);
-            siteSelectorPanel.Margin = new Padding(2, 2, 2, 2);
+            siteSelectorPanel.Margin = new Padding(2);
             siteSelectorPanel.MinimumSize = new Size(600, 400);
             siteSelectorPanel.Name = "siteSelectorPanel";
             siteSelectorPanel.Size = new Size(647, 552);
@@ -60,8 +61,9 @@
             // 
             // txtProdPath
             // 
+            txtProdPath.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             txtProdPath.Location = new Point(176, 16);
-            txtProdPath.Margin = new Padding(2, 2, 2, 2);
+            txtProdPath.Margin = new Padding(2);
             txtProdPath.Name = "txtProdPath";
             txtProdPath.ReadOnly = true;
             txtProdPath.Size = new Size(401, 27);
@@ -69,8 +71,9 @@
             // 
             // btnBrowseProd
             // 
+            btnBrowseProd.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             btnBrowseProd.Location = new Point(584, 16);
-            btnBrowseProd.Margin = new Padding(2, 2, 2, 2);
+            btnBrowseProd.Margin = new Padding(2);
             btnBrowseProd.Name = "btnBrowseProd";
             btnBrowseProd.Size = new Size(24, 24);
             btnBrowseProd.TabIndex = 3;
@@ -88,8 +91,9 @@
             // 
             // txtEapPath
             // 
+            txtEapPath.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             txtEapPath.Location = new Point(176, 48);
-            txtEapPath.Margin = new Padding(2, 2, 2, 2);
+            txtEapPath.Margin = new Padding(2);
             txtEapPath.Name = "txtEapPath";
             txtEapPath.ReadOnly = true;
             txtEapPath.Size = new Size(401, 27);
@@ -97,8 +101,9 @@
             // 
             // btnBrowseEap
             // 
+            btnBrowseEap.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             btnBrowseEap.Location = new Point(584, 48);
-            btnBrowseEap.Margin = new Padding(2, 2, 2, 2);
+            btnBrowseEap.Margin = new Padding(2);
             btnBrowseEap.Name = "btnBrowseEap";
             btnBrowseEap.Size = new Size(24, 24);
             btnBrowseEap.TabIndex = 6;
@@ -116,8 +121,9 @@
             // 
             // txtDataAccessPath
             // 
+            txtDataAccessPath.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             txtDataAccessPath.Location = new Point(176, 80);
-            txtDataAccessPath.Margin = new Padding(2, 2, 2, 2);
+            txtDataAccessPath.Margin = new Padding(2);
             txtDataAccessPath.Name = "txtDataAccessPath";
             txtDataAccessPath.ReadOnly = true;
             txtDataAccessPath.Size = new Size(401, 27);
@@ -125,8 +131,9 @@
             // 
             // btnBrowseDataAccess
             // 
+            btnBrowseDataAccess.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             btnBrowseDataAccess.Location = new Point(584, 80);
-            btnBrowseDataAccess.Margin = new Padding(2, 2, 2, 2);
+            btnBrowseDataAccess.Margin = new Padding(2);
             btnBrowseDataAccess.Name = "btnBrowseDataAccess";
             btnBrowseDataAccess.Size = new Size(24, 24);
             btnBrowseDataAccess.TabIndex = 9;
@@ -144,8 +151,9 @@
             // 
             // txtESubPath
             // 
+            txtESubPath.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             txtESubPath.Location = new Point(176, 112);
-            txtESubPath.Margin = new Padding(2, 2, 2, 2);
+            txtESubPath.Margin = new Padding(2);
             txtESubPath.Name = "txtESubPath";
             txtESubPath.ReadOnly = true;
             txtESubPath.Size = new Size(401, 27);
@@ -153,8 +161,9 @@
             // 
             // btnBrowseESub
             // 
+            btnBrowseESub.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             btnBrowseESub.Location = new Point(584, 112);
-            btnBrowseESub.Margin = new Padding(2, 2, 2, 2);
+            btnBrowseESub.Margin = new Padding(2);
             btnBrowseESub.Name = "btnBrowseESub";
             btnBrowseESub.Size = new Size(24, 24);
             btnBrowseESub.TabIndex = 12;
@@ -163,8 +172,9 @@
             // 
             // btnExecute
             // 
+            btnExecute.Anchor = AnchorStyles.Bottom | AnchorStyles.Right;
             btnExecute.Location = new Point(584, 728);
-            btnExecute.Margin = new Padding(2, 2, 2, 2);
+            btnExecute.Margin = new Padding(2);
             btnExecute.Name = "btnExecute";
             btnExecute.Size = new Size(73, 27);
             btnExecute.TabIndex = 13;
@@ -173,8 +183,10 @@
             // 
             // btnSiteCreator
             // 
+            btnSiteCreator.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
+            btnSiteCreator.Enabled = false;
             btnSiteCreator.Location = new Point(10, 728);
-            btnSiteCreator.Margin = new Padding(2, 2, 2, 2);
+            btnSiteCreator.Margin = new Padding(2);
             btnSiteCreator.Name = "btnSiteCreator";
             btnSiteCreator.Size = new Size(73, 27);
             btnSiteCreator.TabIndex = 13;
@@ -201,7 +213,8 @@
             Controls.Add(btnBrowseESub);
             Controls.Add(btnExecute);
             Controls.Add(btnSiteCreator);
-            Margin = new Padding(2, 2, 2, 2);
+            Margin = new Padding(2);
+            MinimumSize = new Size(690, 800);
             Name = "MainForm";
             Text = "LL TOOL J";
             ResumeLayout(false);

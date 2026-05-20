@@ -199,16 +199,6 @@ namespace TheTool
             confirmForm.Show(this);
         }
 
-        /// <summary>
-        /// Creates Logs\{TodayTag}\Run{n}\log.txt under the executable folder,
-        /// purges log day-folders older than 30 days, and returns a StreamWriter
-        /// for the log file. Returns null if anything fails.
-        /// </summary>
-        /// <summary>
-        /// Creates Logs\{TodayTag}\log_{n}.txt under the executable folder,
-        /// purges any log day folders older than 30 days,
-        /// and returns a StreamWriter for that log file.
-        /// </summary>
         private static StreamWriter? CreatePersistentLogFile(out string? logFilePath)
         {
             logFilePath = null;
@@ -247,10 +237,7 @@ namespace TheTool
             }
         }
 
-
-        /// <summary>
-        /// Deletes date folders (MMddyyyy) under logsRoot that are older than maxAge.
-        /// </summary>
+        // Deletes date folders (MMddyyyy) under logsRoot that are older than maxAge.
         private static void PurgeOldLogFolders(string logsRoot, TimeSpan maxAge)
         {
             try
@@ -357,15 +344,15 @@ namespace TheTool
         }
 
         private async Task RunDeploymentAsync(
-    List<(string SiteName, bool Prod, bool EAP, bool eSub)> confirmedSites,
-    string prodZip,
-    string eapZip,
-    string esubZip,
-    string dataAccessZip,
-    bool isCreate,
-    Action<string>? log,
-    ConfirmationForm? confirmCtx,
-    string resolvedRoot) // global root from config; IIS bases are discovered per-role
+            List<(string SiteName, bool Prod, bool EAP, bool eSub)> confirmedSites,
+            string prodZip,
+            string eapZip,
+            string esubZip,
+            string dataAccessZip,
+            bool isCreate,
+            Action<string>? log,
+            ConfirmationForm? confirmCtx,
+            string resolvedRoot) // global root from config; IIS bases are discovered per-role
         {
             if (!ValidateZipSelections(confirmedSites, prodZip, eapZip, esubZip, dataAccessZip))
                 throw new InvalidOperationException("Validation failed.");
@@ -460,10 +447,37 @@ namespace TheTool
                                 FileManager.DeployProduction_Update(
                                     plan.State, plan.Client,
                                     prodBaseFromIis!,   // Option-1: pass IIS base
-                                    prevFolder, tag, prodZip, onProgress: log);
+                                    prevFolder, tag, prodZip,
+                                    onProgress: log,
+                                    replaceTail: (confirmCtx?.ReplaceProdTail == true));
                             });
 
+                            // Repoint the prod pool to the new dated folder
+                            if (!isCreate)
+                            {
+                                string newProdPath = Path.Combine(prodBaseFromIis!, tag);
+
+                                if (!Directory.Exists(newProdPath))
+                                {
+                                    log?.Invoke($"{plan.SiteName}[IIS][WARN]: Expected new prod path '{newProdPath}' not found; IIS repoint skipped.");
+                                }
+                                else
+                                {
+                                    bool ok = IISManager.IisRepoint.TryRepointAppForPoolToPath(
+                                        plan.SiteName,
+                                        newProdPath,
+                                        log);
+
+                                    if (ok)
+                                        log?.Invoke($"{plan.SiteName}[IIS]: Production app pool repointed to '{newProdPath}'.");
+                                    else
+                                        log?.Invoke($"{plan.SiteName}[IIS][WARN]: Production repoint to '{newProdPath}' failed or was skipped.");
+                                }
+                                log?.Invoke($"{plan.SiteName}: Production Update Complete.");
+                            }
+
                             confirmCtx?.LeavePhase();
+
 
                             string newProdCfg = Path.Combine(prodBaseFromIis!, tag, @"app\environments\config.json");
                             bool nowHasProdConfig = File.Exists(newProdCfg);
@@ -541,7 +555,8 @@ namespace TheTool
                                     FileManager.DeployExternal_Update(
                                         externalRootFromIis!, // Option-1: pass IIS external root
                                         plan.State, plan.Client, tag,
-                                        cisZip, esuZip, dataAccessZip, onProgress: log);
+                                        cisZip, esuZip, dataAccessZip, onProgress: log,
+                                        replaceTail: (confirmCtx?.ReplaceExtTail == true));
                                 });
 
                                 confirmCtx?.LeavePhase();
@@ -648,9 +663,6 @@ namespace TheTool
 
         }
 
-
-
-        // Populate site selector panel with IIS app pools on load
         // Populate site selector panel with IIS app pools on load
         private void LoadAppPoolsIntoPanel()
         {
@@ -715,8 +727,6 @@ namespace TheTool
                     MessageBoxIcon.Error);
             }
         }
-
-
 
         private static Dictionary<string, (bool HasCIS, bool HasESub, bool HasDA)>
             BuildRoleAvailability(IEnumerable<string> allPools)
@@ -796,7 +806,6 @@ namespace TheTool
         }
 
         // ===== File Helpers =====
-
         private string OpenZipFile()
         {
             using (OpenFileDialog dialog = new OpenFileDialog())
@@ -923,11 +932,6 @@ namespace TheTool
             }
         }
 
-
-
-
-
-        // note site/role for manual review 
         private void NoteForReview(string siteName, string roleLabel)
         {
             if (string.Equals(roleLabel, "DataAccess", StringComparison.OrdinalIgnoreCase))

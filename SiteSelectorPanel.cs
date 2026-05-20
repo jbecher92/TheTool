@@ -99,8 +99,8 @@ namespace TheTool
 
 
         public void ApplyRoleAvailability(
-    Dictionary<string, (bool HasCIS, bool HasESub, bool HasDA)> availability,
-    ISet<string> prodSites)
+            Dictionary<string, (bool HasCIS, bool HasESub, bool HasDA)> availability,
+            ISet<string> prodSites)
         {
             if (availability == null || availability.Count == 0) return;
 

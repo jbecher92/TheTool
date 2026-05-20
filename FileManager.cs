@@ -5,6 +5,8 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Xml.Linq;
@@ -44,15 +46,14 @@ namespace TheTool
                 return Path.GetFullPath(possible);
             }
             return normalized;
-
         }
 
         public static string ResolveExternalRoot(
-    string state,
-    string client,
-    string deploymentFlavor,
-    string resolvedRoot,
-    Dictionary<string, string>? /*unused*/ cache = null)
+            string state,
+            string client,
+            string deploymentFlavor,
+            string resolvedRoot,
+            Dictionary<string, string>? /*unused*/ cache = null)
         {
             if (string.IsNullOrWhiteSpace(state))
                 throw new ArgumentException("state is required", nameof(state));
@@ -95,8 +96,7 @@ namespace TheTool
                 }
             }
 
-            // NEW: if resolvedRoot itself looks like an external container (ExternalSites, PbkExternal, etc.),
-            // treat it as the external container and append STATECLIENT.
+            // Look for "external" folder
             bool rootLooksExternal =
                 last.IndexOf("external", StringComparison.OrdinalIgnoreCase) >= 0;
 
@@ -107,8 +107,6 @@ namespace TheTool
             }
 
             // Legacy fallback (supports old callers that pass a high-level root)
-            // Legacy fallback (supports old callers that pass a high-level root)
-            // IMPORTANT: never create a new STATE folder – only use it if it already exists.
             string flavor = (deploymentFlavor ?? "prod").Trim().ToLowerInvariant();
             bool nestByState = flavor == "prod";
 
@@ -143,14 +141,10 @@ namespace TheTool
 
             string clientRootFallback = Path.Combine(basePath, containerName, s + c);
             return Path.GetFullPath(clientRootFallback);
-
         }
 
-
-
-
         // =====================================================================
-        //                           PRODUCTION 
+        //                       PRODUCTION UPDATE
         // =====================================================================
 
         public static void DeployProduction_Update(
@@ -160,7 +154,8 @@ namespace TheTool
             string prevFolder,       // empty or missing => non-dated update branch
             string newFolder,
             string newBuildArchivePath,
-            Action<string>? onProgress = null)
+            Action<string>? onProgress = null,
+            bool replaceTail = false)
         {
             void Report(string m) { try { onProgress?.Invoke(m); } catch { } }
             if (string.IsNullOrWhiteSpace(state)) throw new ArgumentException("state required");
@@ -180,8 +175,8 @@ namespace TheTool
             string newPath = Path.Combine(basePath, newFolder);
             string prevPathTagged = string.IsNullOrWhiteSpace(prevFolder) ? string.Empty : Path.Combine(basePath, prevFolder);
             bool hasPrevTag = !string.IsNullOrWhiteSpace(prevFolder) && Directory.Exists(prevPathTagged);
-            
-            // ===== Non-dated update (base was live) =====
+
+            // ===== Non-dated update =====
             if (!hasPrevTag)
             {
                 // 1) Backup the BASE folder (zip lives in base; suffix '_base' avoids collisions)
@@ -193,10 +188,10 @@ namespace TheTool
                 Report($"{siteTag}: Updating Production - {newPath}");
                 CreateSiteDirectory(newPath);
 
-                // 3) Copy preserved files from BASE → new tag (so we can safely purge base)
+                // 3) Copy preserved files from base -> new tag
                 CopyPreservedFiles(basePath, newPath, ProdPreserveRelative);
 
-                // 4) Stage & extract new build into new tag (no-overwrite), then flatten PBK/DBK wrapper
+                // 4) Stage & extract new build into new tag, then flatten PBK/DBK wrapper
                 string staged = Path.Combine(newPath, Path.GetFileName(newBuildArchivePath));
                 File.Copy(newBuildArchivePath, staged, overwrite: true);
                 ExtractArchiveSkipOverwrite(staged, newPath);
@@ -210,24 +205,41 @@ namespace TheTool
                 // 6) Delete staged archive
                 try { File.Delete(staged); } catch { /* ignore */ }
 
-                // 7) Now purge the BASE, keeping the backup zip and the NEW TAG
-                //    (webconfigbackup is auto-protected via IsProtectedDir)
+                // 7) Purge the base, keeping the backup zip and the new tag
                 var keep = new List<string>();
                 var backupRel = Path.GetFileName(backupZip);
                 if (!string.IsNullOrEmpty(backupRel)) keep.Add(backupRel);
                 keep.Add(newFolder); // <- preserve the entire new tag directory
                 DeleteAllInsideExcept(basePath, keep);
-
+                
                 // 8) Keep only most recent backup zip for this site
                 CleanupBackupsKeepMostRecent(basePath, state, client);
 
-                // 9) Web backup & SSRS key update against the NEW tag
+                // 9) Web backup -> SSRS key update -> web.config tail swap
                 WebBackup(basePath, state, client, newFolder, () => DateTime.Now.ToString("MMddyyyy"), onProgress);
                 UpdateSSRSKey(basePath, state, client, prevFolder: "base", newFolder, onProgress);
-
+                if (replaceTail)
+                {
+                    var activeWeb = Path.Combine(newPath, "web.config");
+                    if (TryGetBuildTailNodes(newBuildArchivePath, Report, out var buildTail, out var buildConfigSections) && buildTail != null)
+                    {
+                        ReplaceWebConfigValues(
+                            activeWebConfigPath: activeWeb,
+                            buildTailNodes: buildTail,
+                            buildConfigSections: buildConfigSections,
+                            preserveProdSessionState: true,
+                            preserveConnectionString: false,
+                            log: Report,
+                            siteTag: siteTag);
+                    }
+                    else
+                    {
+                        Report($"{siteTag}[Web]: Build tail not found — tail replacement skipped.");
+                    }
+                }
                 Report($"{siteTag}: Production Update Complete.");
             }
-            // ===== Dated → dated update=====
+            // ===== Dated -> dated update =====
             else
             {
                 string prevPath = prevPathTagged;
@@ -245,7 +257,6 @@ namespace TheTool
                 // 3) Create new dated folder and copy preserved files from temp → new
                 Report($"{siteTag}: Updating Production - {newPath}");
                 CreateSiteDirectory(newPath);
-
                 DeleteAllInsideExcept(prevPath, ProdPreserveRelative);
                 var srcWeb = Path.Combine(prevPath, "web.config");
                 var srcCfg = Path.Combine(prevPath, @"app\environments\config.json");
@@ -253,19 +264,18 @@ namespace TheTool
                     Report($"{siteTag}[Preserve]: web.config not found in previous build (continuing).");
                 if (!File.Exists(srcCfg))
                     Report($"{siteTag}[Config]: Missing preserved file - {srcCfg}");
-
                 CopyPreservedFiles(prevPath, newPath, ProdPreserveRelative);
 
-                // 4) Stage & extract new build into new tag (no-overwrite), then flatten PBK/DBK wrapper
+                // 4) Stage & extract new build into new tag, then flatten PBK/DBK wrapper
                 string staged = Path.Combine(newPath, Path.GetFileName(newBuildArchivePath));
                 File.Copy(newBuildArchivePath, staged, overwrite: true);
                 ExtractArchiveSkipOverwrite(staged, newPath);
                 MergeFlattenTopFolderNoOverwrite(newPath);
 
-                // 5) Ensure preserved from temp are final (self-copy guarded)
+                // 5) Ensure preserved from temp are final 
                 ForceCopyPreservedFiles(prevPath, newPath);
 
-                // 6) Seed config.json from archive if still missing (soft)
+                // 6) Seed config.json from archive if still missing 
                 string newCfg = Path.Combine(newPath, @"app\environments\config.json");
                 if (!File.Exists(newCfg))
                     TrySeedSingleConfigFromArchive(newBuildArchivePath, newPath, onProgress);
@@ -274,14 +284,32 @@ namespace TheTool
                 TryDeleteDirRecursive(prevPath);
                 try { File.Delete(staged); } catch { /* ignore */ }
 
-                // 8) Keep only the most recent backup zip
+                // 8) Cleanup old backups
                 CleanupBackupsKeepMostRecent(basePath, state, client);
 
-                // 9) Web backup (new tag) & SSRS key update
-                WebBackup(basePath, state, client, newFolder, () => DateTime.Now.ToString("MMddyyyy"), onProgress);
+                // 9) Web backup -> SSRS key update -> web.config tail swap
+                WebBackup(basePath, state, client, newFolder, () => DateTime.Now.ToString("MMddyyyy"), onProgress);          
                 UpdateSSRSKey(basePath, state, client, prevFolder, newFolder, onProgress);
-
-                Report($"{siteTag}: Production Update Complete.");
+                if (replaceTail)
+                {
+                    var activeWeb = Path.Combine(newPath, "web.config");
+                    if (TryGetBuildTailNodes(newBuildArchivePath, Report, out var buildTail, out var buildConfigSections) && buildTail != null)
+                    {
+                        ReplaceWebConfigValues(
+                            activeWebConfigPath: activeWeb,
+                            buildTailNodes: buildTail,
+                            buildConfigSections: buildConfigSections,
+                            preserveProdSessionState: true,
+                            preserveConnectionString: false,
+                            log: Report,
+                            siteTag: siteTag);
+                    }
+                    else
+                    {
+                        Report($"{siteTag}[Web]: Build tail not found — tail replacement skipped.");
+                    }
+                }
+                //Report($"{siteTag}: Production Update Complete.");
             }
         }
 
@@ -290,14 +318,15 @@ namespace TheTool
         // =====================================================================
 
         public static void DeployExternal_Update(
-    string resolvedRoot,     // may be a flat role folder (…\ExternalSites\AZDifferentCaseInfoSearch) or an external root (…\PbkExternal\STATECLIENT)
-    string state,
-    string client,
-    string backupTag,
-    string? caseInfoSearchZip,
-    string? esubpoenaZip,
-    string? dataAccessZip,
-    Action<string>? onProgress = null)
+            string resolvedRoot,     
+            string state,
+            string client,
+            string backupTag,
+            string? caseInfoSearchZip,
+            string? esubpoenaZip,
+            string? dataAccessZip,
+            Action<string>? onProgress = null,
+            bool replaceTail = false)
         {
             void Report(string msg) { try { onProgress?.Invoke(msg); } catch { } }
             string siteTag = $"{state}{client}";
@@ -319,9 +348,7 @@ namespace TheTool
                     ? parent
                     : baseFromIis;
 
-            //Report($"{siteTag}: External Base resolved → {externalBase}");
-
-            string flatPrefix = siteTag;  // e.g. "AZDifferent"
+            string flatPrefix = siteTag;  
 
             // Legacy flat folders directly under the external base:
             string flatCis = Path.Combine(externalBase, flatPrefix + "CaseInfoSearch");
@@ -343,13 +370,12 @@ namespace TheTool
             string daPath;
             string backupRoot;
             string daFolder;
-
+            
+            // -----------------------------------------------------------------
+            // FLAT -> CANONICAL MIGRATION
+            // -----------------------------------------------------------------
             if (flatMode)
             {
-                // -----------------------------------------------------------------
-                // FLAT → CANONICAL MIGRATION
-                // -----------------------------------------------------------------
-
                 daFolder = hasFlatPBK ? "PBKDataAccess" : "DataAccess";
 
                 bool baseLooksExternal =
@@ -363,7 +389,7 @@ namespace TheTool
                 string esRoot = Path.Combine(clientRoot, "eSubpoena");
                 string daRoot = Path.Combine(clientRoot, daFolder);
 
-                // Tell the user what is about to happen (before we move anything)
+                // Tell the user what is about to happen 
                 Report($"{siteTag}: Detected flat external layout. Migrating to '{clientRoot}'. Legacy folders suffixed with '_old_{backupTag}'.");
 
                 Directory.CreateDirectory(clientRoot);
@@ -371,7 +397,7 @@ namespace TheTool
                 if (hasFlatEsu) Directory.CreateDirectory(esRoot);
                 if (hasFlatDA || hasFlatPBK) Directory.CreateDirectory(daRoot);
 
-                // Copy legacy content into the normalized layout (no overwrite).
+                // Copy legacy content into the normalized layout .
                 if (hasFlatCis) CopyDirectoryContents(flatCis, cisRoot);
                 if (hasFlatEsu) CopyDirectoryContents(flatEsu, esRoot);
                 if (hasFlatDA || hasFlatPBK)
@@ -380,7 +406,7 @@ namespace TheTool
                     CopyDirectoryContents(flatDaSource, daRoot);
                 }
 
-                // Rename legacy flat folders to *_old_<tag> so the user can later clean them up.
+                // Rename legacy flat folders to *_old_<tag> 
                 void TryRenameLegacy(string path)
                 {
                     if (!Directory.Exists(path)) return;
@@ -407,11 +433,11 @@ namespace TheTool
                 daPath = daRoot;
                 backupRoot = clientRoot;
             }
+            // -----------------------------------------------------------------
+            // Normal update
+            // -----------------------------------------------------------------
             else
             {
-                // -----------------------------------------------------------------
-                // NON-FLAT: already under an external root or config-root style.
-                // -----------------------------------------------------------------
                 externalRoot = baseFromIis;
 
                 string? parentDir = Path.GetDirectoryName(externalRoot);
@@ -441,17 +467,17 @@ namespace TheTool
             }
 
             // =====================================================================
-            //  VALIDATE ARCHIVES (unchanged semantics)
+            //  VALIDATE ARCHIVES 
             // =====================================================================
             if (!string.IsNullOrWhiteSpace(caseInfoSearchZip)) ValidateBuildName(caseInfoSearchZip, "caseinfosearch");
             if (!string.IsNullOrWhiteSpace(esubpoenaZip)) ValidateBuildName(esubpoenaZip, "esubpoena");
             if (!string.IsNullOrWhiteSpace(dataAccessZip)) ValidateBuildName(dataAccessZip, "dataaccess");
 
-            // Backup tag directory under the per-client backup root
-            string backupDir = GetExternalBackupDir(backupRoot, backupTag);
+
+            //---Backups(only for roles provided) ---
+           string backupDir = GetExternalBackupDir(backupRoot, backupTag);
             Report($"{siteTag}: Creating External Backup - {backupDir}.");
 
-            // --- Backups (only for roles provided) ---
             if (!string.IsNullOrWhiteSpace(caseInfoSearchZip))
                 TryBackupFolder(cisPath, Path.Combine(backupDir, "CaseInfoSearch.zip"), Report);
 
@@ -483,6 +509,7 @@ namespace TheTool
 
             // -------- Local helpers ----------
 
+            // Handles deployment of a single role if its archive path is provided; otherwise skips silently
             void DeployRoleIfProvided(string roleDisplayName, string? archivePath, string rolePath)
             {
                 if (string.IsNullOrWhiteSpace(archivePath))
@@ -497,30 +524,26 @@ namespace TheTool
                 // Capture existing Angular URLs (if any) before we wipe the folder
                 string? existingBaseHref = null;
                 string? existingRewriteUrl = null;
-
                 bool isAngularRole =
                     roleDisplayName.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase) ||
+                    roleDisplayName.Equals("PBKDataAccess", StringComparison.OrdinalIgnoreCase) ||
+                    roleDisplayName.Equals("DataAccess", StringComparison.OrdinalIgnoreCase) ||
                     roleDisplayName.Equals("eSubpoena", StringComparison.OrdinalIgnoreCase);
-
-                if (isAngularRole && Directory.Exists(rolePath))
+                bool isDa = roleDisplayName.Equals("PBKDataAccess", StringComparison.OrdinalIgnoreCase) ||
+                    roleDisplayName.Equals("DataAccess", StringComparison.OrdinalIgnoreCase);
+                bool isCis = roleDisplayName.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase);
+                
+                
+                if (isCis && Directory.Exists(rolePath))
                 {
                     var prevIndex = Path.Combine(rolePath, @"app\index.html");
                     if (File.Exists(prevIndex))
                         existingBaseHref = TryReadExistingBaseHref(prevIndex, Report, siteTag, roleDisplayName);
-
-                    var prevAppCfg = Path.Combine(rolePath, @"app\web.config");
-                    if (File.Exists(prevAppCfg))
-                        existingRewriteUrl = TryReadExistingRewriteUrl(prevAppCfg, Report, siteTag, roleDisplayName);
                 }
 
-                Report($"{siteTag}: Updating {roleDisplayName}- {rolePath}");
+                Report($"{siteTag}{roleDisplayName}: Updating {roleDisplayName} - {rolePath}");
 
-                // Record whether previous role folder had config.json
-                var prevCfg = Path.Combine(rolePath, @"app\environments\config.json");
-                bool wasNonAngular = RequiresAppEnvironmentsConfig(roleDisplayName) && !File.Exists(prevCfg);
-                if (wasNonAngular)
-                    Report($"***{siteTag}[ANGULAR]: Angular Files missing - {rolePath}. ***");
-
+                // Validate archive extension
                 var ext = Path.GetExtension(archivePath).ToLowerInvariant();
                 if (ext != ".zip" && ext != ".7z")
                 {
@@ -531,6 +554,7 @@ namespace TheTool
                 Directory.CreateDirectory(rolePath);
                 DeleteAllInsideExcept(rolePath, ExternalPreserveRelative);
 
+                // Stage the archive inside the role folder to avoid any cross-folder complications, then extract in-place
                 var dstArchive = Path.Combine(rolePath, Path.GetFileName(archivePath));
                 try
                 {
@@ -547,16 +571,48 @@ namespace TheTool
 
                 try { if (File.Exists(dstArchive)) File.Delete(dstArchive); } catch { }
 
-                // Track whether we had to seed config.json
-                bool configSeeded = false;
-                var newCfg = Path.Combine(rolePath, @"app\environments\config.json");
-                if (RequiresAppEnvironmentsConfig(roleDisplayName) && !File.Exists(newCfg))
+                var activeWeb = Path.Combine(rolePath, "web.config");
+
+                // For DA, if connectionStrings section is missing, seed it from CIS's web.config. Ensure that DA calls the correct dataConfig
+                if (isDa)
                 {
-                    configSeeded = TrySeedSingleConfigFromArchive(archivePath, rolePath, onProgress);
+                    SeedConnectionStringsFromCaseInfoSearchIfMissing(
+                        dataAccessWebConfigPath: activeWeb,
+                        caseInfoSearchWebConfigPath: Path.Combine(cisPath, "web.config"),
+                        log: Report,
+                        siteTag: siteTag,
+                        roleDisplayName: roleDisplayName);
+                    
+                    EnsureDataConfigurationElement(
+                        dataAccessWebConfigPath: activeWeb,
+                        log: Report,
+                        siteTag: siteTag,
+                        roleDisplayName: roleDisplayName); 
                 }
 
-                // Non-Angular → Angular bootstrap (CIS/eSub only)
-                if (isAngularRole && wasNonAngular)
+                // Handles web.config changes
+                if (isAngularRole && replaceTail) 
+                {
+                    
+                    if (TryGetBuildTailNodes(archivePath, Report, out var buildTail, out var buildConfigSections) && buildTail != null)
+                    {
+                        ReplaceWebConfigValues(
+                            activeWebConfigPath: activeWeb,
+                            buildTailNodes: buildTail,
+                            buildConfigSections: buildConfigSections,
+                            preserveProdSessionState: false,
+                            preserveConnectionString: true,
+                            log: Report,
+                            siteTag: siteTag);
+                    }
+                    else
+                    {
+                        Report($"{siteTag}[{roleDisplayName}][Web]: Build tail not found - tail replacement skipped.");
+                    } 
+                }
+
+                // Always remake config.json (CIS/eSub only)
+                if (isAngularRole && !isDa)
                 {
                     try
                     {
@@ -573,27 +629,150 @@ namespace TheTool
                     }
                     catch (Exception ex)
                     {
-                        Report($"{siteTag}{roleDisplayName}[Config]: Non-Angular→Angular bootstrap failed: {ex.Message}");
+                        Report($"{siteTag}{roleDisplayName}[Config]: Angular bootstrap failed: {ex.Message}");
                     }
                 }
-
 
                 // Post-deploy rewrites (CIS/eSub only)
                 try
                 {
                     if (isAngularRole)
                     {
-                        UpdateExternalIndexBaseHref(rolePath, siteTag, Report, roleDisplayName, existingBaseHref);
                         UpdateExternalRewriteAction(rolePath, siteTag, Report, roleDisplayName, existingRewriteUrl);
+                        UpdateExternalIndexBaseHref(rolePath, siteTag, Report, roleDisplayName, existingBaseHref);
                     }
                 }
                 catch (Exception ex)
                 {
                     Report($"{siteTag}[{roleDisplayName}][ERROR]: Post-deploy rewrites failed: {ex.Message}");
                 }
+            }
 
-                // Manual-review flags for missing / seeded Angular bits + primary web.config
-                EmitManualReviewFlags(roleDisplayName, rolePath, configSeeded);
+            static void EnsureDataConfigurationElement(
+                string dataAccessWebConfigPath,
+                Action<string> log,
+                string siteTag,
+                string roleDisplayName)
+            {
+                try
+                {
+                    if (!File.Exists(dataAccessWebConfigPath))
+                    {
+                        log($"{siteTag}{roleDisplayName}[Web]: web.config not found; dataConfiguration check skipped.");
+                        return;
+                    }
+
+                    var doc = XDocument.Load(dataAccessWebConfigPath, LoadOptions.PreserveWhitespace);
+                    var root = doc.Root;
+
+                    if (root == null)
+                    {
+                        log($"{siteTag}{roleDisplayName}[Web]: web.config has no root; dataConfiguration check skipped.");
+                        return;
+                    }
+
+                    if (root.Element("dataConfiguration") != null)
+                        return;
+                    else
+                    {
+                        var dataConfiguration = new XElement("dataConfiguration",
+                        new XAttribute("defaultDatabase", "KCMSConnectionString"));
+                        var appSettings = root.Element("appSettings");
+                        
+                        if (appSettings != null)
+                        {
+                            appSettings.AddBeforeSelf(
+                                new XText(Environment.NewLine + "  "),
+                                dataConfiguration
+                            );
+                        }
+                        else
+                        {
+                            var configSections = root.Element("configSections");
+
+                            if (configSections != null)
+                            {
+                                configSections.AddAfterSelf(
+                                    new XText(Environment.NewLine + "  "),
+                                    dataConfiguration
+                                );
+                            }
+                            else
+                            {
+                                root.AddFirst(
+                                    new XText(Environment.NewLine + "  "),
+                                    dataConfiguration
+                                );
+                            }
+                        }
+                    doc.Save(dataAccessWebConfigPath);
+                    log($"{siteTag}{roleDisplayName}[Web]: Added <dataConfiguration defaultDatabase=\"KCMSConnectionString\" />.");
+                    }  
+                }
+                catch (Exception ex)
+                {
+                    log($"{siteTag}{roleDisplayName}[Web][ERROR]: dataConfiguration check failed: {ex.Message}");
+                }
+            }
+
+            static void SeedConnectionStringsFromCaseInfoSearchIfMissing(
+                string dataAccessWebConfigPath,
+                string caseInfoSearchWebConfigPath,
+                Action<string> log,
+                string siteTag,
+                string roleDisplayName)
+            {
+                try
+                {
+                    if (!File.Exists(dataAccessWebConfigPath))
+                    {
+                        log($"{siteTag}{roleDisplayName}[Web]: DataAccess web.config not found; connectionStrings seed skipped.");
+                        return;
+                    }
+
+                    if (!File.Exists(caseInfoSearchWebConfigPath))
+                    {
+                        log($"{siteTag}{roleDisplayName}[Web]: CaseInfoSearch web.config not found; connectionStrings seed skipped.");
+                        return;
+                    }
+
+                    var daDoc = XDocument.Load(dataAccessWebConfigPath, LoadOptions.PreserveWhitespace);
+                    var daRoot = daDoc.Root;
+
+                    if (daRoot == null)
+                    {
+                        log($"{siteTag}{roleDisplayName}[Web]: DataAccess web.config has no root; connectionStrings seed skipped.");
+                        return;
+                    }
+
+                    if (daRoot.Element("connectionStrings") != null)
+                        return;
+
+                    var cisDoc = XDocument.Load(caseInfoSearchWebConfigPath, LoadOptions.PreserveWhitespace);
+                    var cisConnectionStrings = cisDoc.Root?.Element("connectionStrings");
+
+                    if (cisConnectionStrings == null)
+                    {
+                        log($"{siteTag}{roleDisplayName}[Web]: CaseInfoSearch web.config has no connectionStrings; seed skipped.");
+                        return;
+                    }
+
+                    var csClone = new XElement(cisConnectionStrings);
+                    var systemWeb = daRoot.Element("system.web");
+
+                    if (systemWeb != null)
+                        systemWeb.AddBeforeSelf(new XText(Environment.NewLine + "  "), csClone);
+                    else
+                        daRoot.Add(csClone);
+
+                    daDoc.Save(dataAccessWebConfigPath);
+
+                    log($"{siteTag}{roleDisplayName}[Web]: Seeded connectionStrings from CaseInfoSearch.");
+                }
+                catch (Exception ex)
+                {
+                    log($"{siteTag}{roleDisplayName}[Web][ERROR]: connectionStrings seed failed: {ex.Message}");
+                }
             }
 
             static void TryBackupFolder(string sourceDir, string archivePath, Action<string> log)
@@ -631,12 +810,12 @@ namespace TheTool
             }
 
             static bool TryComputeAngularBaseFromDal(
-    string roleRootPath,
-    string roleDisplay,
-    string siteTagLocal,
-    Action<string> log,
-    out string dalBaseUrl,
-    out string dalSiteTag)
+                string roleRootPath,
+                string roleDisplay,
+                string siteTagLocal,
+                Action<string> log,
+                out string dalBaseUrl,
+                out string dalSiteTag)
             {
                 dalBaseUrl = string.Empty;
                 dalSiteTag = siteTagLocal;
@@ -684,7 +863,7 @@ namespace TheTool
                         return false;
                     }
 
-                    string beforeAsm = main.Substring(0, idx); // .../{SiteTag}DataAccess
+                    string beforeAsm = main.Substring(0, idx); 
                     int slash = beforeAsm.LastIndexOf('/');
                     if (slash < 0 || slash == beforeAsm.Length - 1)
                     {
@@ -692,24 +871,29 @@ namespace TheTool
                         return false;
                     }
 
-                    string folder = beforeAsm.Substring(slash + 1); // e.g. OHFartDataAccess
+                    //
+                    string folder = beforeAsm.Substring(slash + 1); 
 
+                    //
                     string? suffix = null;
                     if (folder.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase))
                         suffix = "PBKDataAccess";
                     else if (folder.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase))
                         suffix = "DataAccess";
 
+
+
                     if (suffix == null || folder.Length <= suffix.Length)
                     {
                         log($"{siteTagLocal}{roleDisplay}[Config]: Unable to derive SiteTag from PBKDAL.DataAccess folder '{folder}'.");
+                        log($"{siteTagLocal}{roleDisplay} dalAdd - {dalAdd}");
+                        log($"{siteTagLocal}{roleDisplay} suffix - {suffix}");
                         return false;
                     }
 
-                    dalSiteTag = folder.Substring(0, folder.Length - suffix.Length); // e.g. OHFart
-                    dalBaseUrl = beforeAsm.Substring(0, slash + 1);                  // e.g. https://hosted.../
-
-                    //log($"{siteTagLocal}{roleDisplay}[Config]: Parsed PBKDAL.DataAccess → base='{dalBaseUrl}', siteTag='{dalSiteTag}'.");
+                    //
+                    dalSiteTag = folder.Substring(0, folder.Length - suffix.Length); 
+                    dalBaseUrl = beforeAsm.Substring(0, slash + 1);                  
                     return true;
                 }
                 catch (Exception ex)
@@ -758,13 +942,18 @@ namespace TheTool
                     string appName = roleDisplay.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)
                         ? "CaseInfoSearch"
                         : "eSubpoena";
-
+                    
+                    string angularUrl;
                     string appSegment = dalSiteTag + appName;
-                    string angularUrl = dalBaseUrl + appSegment + "/app";
+                    if (appName.Equals("eSubpoena", StringComparison.OrdinalIgnoreCase))
+                        angularUrl = dalBaseUrl + appSegment + "/app" + "/#/";
+                    else
+                        angularUrl = dalBaseUrl + appSegment + "/app";
+                    
 
                     var newAdd = new XElement("add",
-                        new XAttribute("key", "AngularSiteUrl"),
-                        new XAttribute("value", angularUrl));
+                            new XAttribute("key", "AngularSiteUrl"),
+                            new XAttribute("value", angularUrl));
 
                     // "Just after <appSettings>" → first child in appSettings
                     appSettings.AddFirst(newAdd);
@@ -782,61 +971,109 @@ namespace TheTool
 
             static void CustomizeAngularConfigJson(
                 string roleRootPath,
-                string roleDisplay,
+                string roleDisplayName,
                 string dalBaseUrl,
                 string dalSiteTag,
-                string siteTagLocal,
+                string siteTag,
                 Action<string> log)
             {
                 try
                 {
                     string cfgPath = Path.Combine(roleRootPath, @"app\environments\config.json");
+
                     if (!File.Exists(cfgPath))
                     {
-                        log($"{siteTagLocal}{roleDisplay}[Config]: app\\environments\\config.json not found; skipping JSON customization.");
+                        log($"{siteTag}{roleDisplayName}[Config]: config.json not found; skipping.");
                         return;
                     }
 
-                    string json = File.ReadAllText(cfgPath);
+                    var root = JsonNode.Parse(File.ReadAllText(cfgPath)) as JsonObject;
 
-                    string appName = roleDisplay.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)
+                    if (root == null)
+                    {
+                        log($"{siteTag}{roleDisplayName}[Config]: Invalid JSON.");
+                        return;
+                    }
+
+                    string appName = roleDisplayName.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)
                         ? "CaseInfoSearch"
                         : "eSubpoena";
 
                     string appSegment = dalSiteTag + appName;
-                    string appBase = dalBaseUrl + appSegment; // no trailing slash
-
-                    string rootUrl = appBase + "/app";
+                    string appBase = dalBaseUrl + appSegment;
+                    string rootUrl = appBase;
+                    string baseHref = $"/{appSegment}/app/";
                     string apiUrl = appBase + "/";
-                    string loginUrl = appBase + "/#/login";
-                    string baseHref = $"/{dalSiteTag}{appName}/app/";
-                    string buildVersion = appBase + "/buildVersion.json";
+                    string loginUrl = appBase + "/app/#/login";
+                    string buildVersion = appBase + "/app/assets/config/buildVersion.json";
 
-                    // Straight string replaces on the known keys
-                    json = Regex.Replace(json, "\"rootUrl\"\\s*:\\s*\"[^\"]*\"", $"\"rootUrl\": \"{EscapeJsonString(rootUrl)}\"");
-                    json = Regex.Replace(json, "\"url\"\\s*:\\s*\"[^\"]*\"", $"\"url\": \"{EscapeJsonString(apiUrl)}\"");
-                    json = Regex.Replace(json, "\"loginUrl\"\\s*:\\s*\"[^\"]*\"", $"\"loginUrl\": \"{EscapeJsonString(loginUrl)}\"");
-                    json = Regex.Replace(json, "\"baseHref\"\\s*:\\s*\"[^\"]*\"", $"\"baseHref\": \"{EscapeJsonString(baseHref)}\"");
-                    json = Regex.Replace(json, "\"buildVersion\"\\s*:\\s*\"[^\"]*\"", $"\"buildVersion\": \"{EscapeJsonString(buildVersion)}\"");
+                    if (appName.Equals("eSubpoena", StringComparison.OrdinalIgnoreCase))
+                    {
+                        rootUrl += "/app";
+                        baseHref = $"/";
+                    }
+                    else
+                    {
+                        rootUrl += "/app/";
+                    }
 
-                    File.WriteAllText(cfgPath, json);
+                    // Walk the JSON tree and replace values for known keys, but only at expected locations (e.g. "url" under "api", not some random "url" key somewhere else)
+                    void Walk(JsonNode? node, string? parent = null)
+                    {
+                        if (node is JsonObject obj)
+                        {
+                            foreach (var kvp in obj.ToList())
+                            {
+                                string key = kvp.Key;
+                                JsonNode? value = kvp.Value;
 
-                    log($"{siteTagLocal}{roleDisplay}[Config]: Updated app\\environments\\config.json with site-specific URLs.");
+                                if (key.Equals("rootUrl", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    obj[key] = rootUrl;
+                                }
+                                else if (key.Equals("baseHref", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    obj[key] = baseHref;
+                                }
+                                else if (key.Equals("buildVersion", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    obj[key] = buildVersion;
+                                }
+                                else if (key.Equals("url", StringComparison.OrdinalIgnoreCase)
+                                         && parent?.Equals("api", StringComparison.OrdinalIgnoreCase) == true)
+                                {
+                                    obj[key] = apiUrl;
+                                }
+                                else if (key.Equals("loginUrl", StringComparison.OrdinalIgnoreCase)
+                                         && parent?.Equals("auth", StringComparison.OrdinalIgnoreCase) == true)
+                                {
+                                    obj[key] = loginUrl;
+                                }
+
+                                Walk(value, key);
+                            }
+                        }
+                        else if (node is JsonArray arr)
+                        {
+                            foreach (var item in arr)
+                                Walk(item, parent);
+                        }
+                    }
+
+                    Walk(root);
+
+                    File.WriteAllText(cfgPath, root.ToJsonString(new JsonSerializerOptions
+                    {
+                        WriteIndented = true
+                    }));
+
+                    log($"{siteTag}{roleDisplayName}[Config]: New config.json created.");
                 }
                 catch (Exception ex)
                 {
-                    log($"{siteTagLocal}{roleDisplay}[Config]: Failed to update config.json: {ex.Message}");
+                    log($"{siteTag}{roleDisplayName}[Config]: Failed: {ex.Message}");
                 }
             }
-
-            static string EscapeJsonString(string value)
-            {
-                return (value ?? string.Empty)
-                    .Replace("\\", "\\\\")
-                    .Replace("\"", "\\\"");
-            }
-
-
 
             static void RepointExternalPoolsIfPresent(
                 string stateLocal,
@@ -871,47 +1108,6 @@ namespace TheTool
                 TryRepointPool(daFolderLocal, daRootLocal);
             }
 
-
-            void EmitManualReviewFlags(string roleDisplayName, string roleRootPath, bool configSeeded)
-            {
-                if (string.IsNullOrWhiteSpace(roleRootPath))
-                    return;
-
-                string extRootForLog = externalRoot;
-
-                // Primary external web.config at the role root
-                string primaryWeb = Path.Combine(roleRootPath, "web.config");
-                if (!File.Exists(primaryWeb))
-                {
-                    Report($"{siteTag}[ManualReview]: External root '{extRootForLog}'. {roleDisplayName} primary web.config missing at '{primaryWeb}'. Please review / recreate manually.");
-                }
-
-                // Only Angular roles (CIS / eSub) have the app folder expectations
-                bool isAngularRole = RequiresAppEnvironmentsConfig(roleDisplayName);
-                if (!isAngularRole)
-                    return;
-
-                string indexPath = Path.Combine(roleRootPath, @"app\index.html");
-                string appWebPath = Path.Combine(roleRootPath, @"app\web.config");
-                string cfgPath = Path.Combine(roleRootPath, @"app\environments\config.json");
-
-                if (!File.Exists(indexPath))
-                {
-                    Report($"{siteTag}[ManualReview]: External root '{extRootForLog}'. {roleDisplayName} missing app\\index.html at '{indexPath}'.");
-                }
-
-                if (!File.Exists(appWebPath))
-                {
-                    Report($"{siteTag}[ManualReview]: External root '{extRootForLog}'. {roleDisplayName} missing app\\web.config at '{appWebPath}'.");
-                }
-
-                if (configSeeded || !File.Exists(cfgPath))
-                {
-                    string reason = configSeeded ? "was seeded from build" : "is missing";
-                    Report($"{siteTag}[ManualReview]: External root '{extRootForLog}'. {roleDisplayName} app\\environments\\config.json {reason} at '{cfgPath}'. Review and update manually.");
-                }
-            }
-
             static string? TryReadExistingBaseHref(string indexPath, Action<string> log, string siteTagLocal, string roleDisplay)
             {
                 try
@@ -930,63 +1126,8 @@ namespace TheTool
                     return null;
                 }
             }
-
-            static string? TryReadExistingRewriteUrl(string cfgPath, Action<string> log, string siteTagLocal, string roleDisplay)
-            {
-                try
-                {
-                    var doc = XDocument.Load(cfgPath, LoadOptions.PreserveWhitespace);
-
-                    var actions = doc.Descendants()
-                                     .Where(e => string.Equals(e.Name.LocalName, "action", StringComparison.OrdinalIgnoreCase))
-                                     .ToList();
-
-                    if (actions.Count == 0)
-                    {
-                        log($"{siteTagLocal}{roleDisplay}[Config]: Existing app\\web.config had no <action> elements.");
-                        return null;
-                    }
-
-                    bool isCis = roleDisplay.Equals("CaseInfoSearch", StringComparison.OrdinalIgnoreCase);
-                    string appName = isCis ? "CaseInfoSearch" : "eSubpoena";
-
-                    var target = actions.FirstOrDefault(a =>
-                    {
-                        var urlAttr = a.Attributes().FirstOrDefault(x => string.Equals(x.Name.LocalName, "url", StringComparison.OrdinalIgnoreCase));
-                        if (urlAttr is null) return false;
-                        var v = urlAttr.Value ?? string.Empty;
-                        return v.StartsWith("/", StringComparison.OrdinalIgnoreCase)
-                               && v.IndexOf(appName, StringComparison.OrdinalIgnoreCase) >= 0;
-                    })
-                    ?? actions.FirstOrDefault(a =>
-                           a.Attributes().Any(x => string.Equals(x.Name.LocalName, "url", StringComparison.OrdinalIgnoreCase)));
-
-                    if (target == null)
-                    {
-                        log($"{siteTagLocal}{roleDisplay}[Config]: Existing app\\web.config had no suitable <action url=\"...\"> element.");
-                        return null;
-                    }
-
-                    var urlAttrFinal = target.Attributes()
-                                             .First(x => string.Equals(x.Name.LocalName, "url", StringComparison.OrdinalIgnoreCase));
-
-                    return urlAttrFinal.Value;
-                }
-                catch (Exception ex)
-                {
-                    log($"{siteTagLocal}{roleDisplay}[Config]: Failed to read existing app\\web.config: {ex.Message}");
-                    return null;
-                }
-            }
         }
 
-
-
-
-
-        // =====================================================================
-        //                       CONFIG CHANGES
-        // =====================================================================
         public static void WebBackup(
             string prodBasePathOrRoot,    // pass IIS prod base path
             string state,
@@ -1027,7 +1168,7 @@ namespace TheTool
             string prodBasePathOrRoot,    // pass IIS prod base path
             string state,
             string client,
-            string prevFolder,   
+            string prevFolder,
             string newFolder,
             Action<string>? onProgress = null)
         {
@@ -1097,10 +1238,305 @@ namespace TheTool
             }
             catch (Exception ex)
             {
-                onProgress?.Invoke($"[ERROR] UpdateSSRSKey failed: {ex.Message}");
+                string siteTag2 = $"{state}{client}";
+                onProgress?.Invoke($"{siteTag2}[ERROR] UpdateSSRSKey failed: {ex.Message}");
             }
         }
 
+        private sealed class BuildWebConfigParts
+        {
+            public List<XNode>? TailNodes { get; set; }
+            public XElement? ConfigSections { get; set; }
+        }
+
+        private static readonly Dictionary<string, BuildWebConfigParts?> _buildTailCache = 
+            new(StringComparer.OrdinalIgnoreCase);
+
+
+        // Get (or load once) the list of nodes that appear AFTER </appSettings> in the build's role-root web.config.
+        private static bool TryGetBuildTailNodes(
+            string archivePath,
+            Action<string>? log,
+            out List<XNode>? tail,
+            out XElement? configSections)
+        {
+            if (string.IsNullOrWhiteSpace(archivePath) || !File.Exists(archivePath))
+            {
+                tail = null;
+                configSections = null;
+                return false;
+            }
+
+            if (_buildTailCache.TryGetValue(archivePath, out var cached))
+            {
+                tail = cached?.TailNodes;
+                configSections = cached?.ConfigSections;
+                return tail != null;
+            }
+
+            try
+            {
+                var ext = Path.GetExtension(archivePath).ToLowerInvariant();
+                if (ext == ".zip")
+                {
+                    using var za = ZipFile.OpenRead(archivePath);
+                    // Prefer a role-root web.config (exclude */app/web.config)
+                    var entry = za.Entries
+                        .Where(e => !string.IsNullOrEmpty(e.FullName))
+                        .OrderBy(e => e.FullName.Count(ch => ch == '/' || ch == '\\')) // shallowest first
+                        .FirstOrDefault(e =>
+                        {
+                            var p = e.FullName.Replace('\\', '/');
+                            if (!p.EndsWith("/web.config", StringComparison.OrdinalIgnoreCase)) return false;
+                            return p.IndexOf("/app/", StringComparison.OrdinalIgnoreCase) < 0;
+                        });
+
+                    
+                    if (entry == null) { _buildTailCache[archivePath] = null; tail = null; configSections = null; return false; }
+
+                    using var s = entry.Open();
+                    var doc = XDocument.Load(s, LoadOptions.PreserveWhitespace);
+                    var app = doc.Root?.Element("appSettings");
+                    if (app == null) { _buildTailCache[archivePath] = null; tail = null; configSections = null; return false; }
+
+                    tail = app.NodesAfterSelf().Select(CloneNode).ToList();
+
+                    var cs = doc.Root?.Element("configSections");
+                    configSections = cs != null ? new XElement(cs) : null;
+
+                    _buildTailCache[archivePath] = new BuildWebConfigParts
+                    {
+                        TailNodes = tail,
+                        ConfigSections = configSections
+                    };
+
+                    return true;
+                }
+                else if (ext == ".7z")
+                {
+                    var sevenZip = Find7zExe();
+                    if (sevenZip == null) { _buildTailCache[archivePath] = null; tail = null; configSections = null; return false; }
+
+                    var tempDir = Path.Combine(Path.GetTempPath(), "thetool_wc_" + Guid.NewGuid().ToString("N"));
+                    Directory.CreateDirectory(tempDir);
+
+                    try
+                    {
+                        // Extract *web.config files but don't overwrite existing files anywhere (-aos)
+                        // We'll pick the shallowest one that is NOT under \app\
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = sevenZip,
+                            Arguments = $"x \"{archivePath}\" -o\"{tempDir}\" -y -aos -r \"*web.config\"",
+                            UseShellExecute = false,
+                            CreateNoWindow = true,
+                            RedirectStandardOutput = true,
+                            RedirectStandardError = true
+                        };
+                        using var p = Process.Start(psi)!;
+                        p.WaitForExit();
+
+                        if (p.ExitCode != 0) { _buildTailCache[archivePath] = null; tail = null; configSections = null; return false; }
+
+                        var candidates = Directory.EnumerateFiles(tempDir, "web.config", SearchOption.AllDirectories)
+                            .OrderBy(path => path.Count(ch => ch == '\\' || ch == '/')) // shallowest first
+                            .Where(path => path.IndexOf($"{Path.DirectorySeparatorChar}app{Path.DirectorySeparatorChar}", StringComparison.OrdinalIgnoreCase) < 0)
+                            .ToList();
+
+                        var pick = candidates.FirstOrDefault();
+                        if (pick == null) { _buildTailCache[archivePath] = null; tail = null; configSections = null; return false; }
+
+                        var doc = XDocument.Load(pick, LoadOptions.PreserveWhitespace);
+                        var app = doc.Root?.Element("appSettings");
+                        if (app == null) { _buildTailCache[archivePath] = null; tail = null; configSections = null; return false; }
+
+                        tail = app.NodesAfterSelf().Select(CloneNode).ToList();
+
+                        var cs = doc.Root?.Element("configSections");
+                        configSections = cs != null ? new XElement(cs) : null;
+
+                        _buildTailCache[archivePath] = new BuildWebConfigParts
+                        {
+                            TailNodes = tail,
+                            ConfigSections = configSections
+                        };
+
+                        return true;
+                    }
+                    finally
+                    {
+                        try { Directory.Delete(tempDir, true); } catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"[WebTail] Failed to load build tail from '{archivePath}': {ex.Message}");
+            }
+
+            _buildTailCache[archivePath] = null;
+            tail = null;
+            configSections = null;
+            return false;
+        }
+
+        private static void ReplaceWebConfigValues(
+            string activeWebConfigPath,
+            IEnumerable<XNode> buildTailNodes,
+            XElement? buildConfigSections,
+            bool preserveProdSessionState,
+            bool preserveConnectionString,
+            Action<string>? log = null,
+            string? siteTag = null)
+        {
+            try
+            {
+                string role = activeWebConfigPath.Split('\\')[^2];
+                bool isDa = role.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase) 
+                         || role.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase);
+                var newline = new XText(Environment.NewLine + "  ");
+                bool connectionStringPreserved = false;
+                bool sessionStatePreserved = false;
+
+                if (!File.Exists(activeWebConfigPath))
+                {
+                    log?.Invoke($"{siteTag ?? ""}[Web]: Tail replace skipped – active web.config missing.");
+                    return;
+                }
+
+                var activeDoc = XDocument.Load(activeWebConfigPath, LoadOptions.PreserveWhitespace);
+                var activeRoot = activeDoc.Root ?? throw new InvalidOperationException("Active web.config has no root.");
+
+                // Replace configSections in Data Access for QuickNav tags
+                if (buildConfigSections != null && isDa)
+                {
+                    activeRoot.Element("configSections")?.Remove();
+                    activeRoot.AddFirst(new XElement(buildConfigSections));
+                }
+
+                var activeApp = activeRoot.Element("appSettings")
+                                ?? throw new InvalidOperationException("Active web.config missing <appSettings>.");
+
+                // Preserve session state
+                XElement? activeSessionState = null;
+                if (preserveProdSessionState)
+                {
+                    var sw = activeRoot.Element("system.web");
+                    var ss = sw?.Element("sessionState");
+                    if (ss != null) 
+                        activeSessionState = new XElement(ss);
+                }
+
+                // Preserve connectionString in data access configs
+                XElement? activeConnectionStrings = null;
+                if (preserveConnectionString)
+                {
+                    var cs = activeRoot.Element("connectionStrings");
+                    if (cs != null)
+                        activeConnectionStrings = new XElement(cs);
+                }
+
+                // Remove active tail nodes (everything after </appSettings>)
+                foreach (var n in activeApp.NodesAfterSelf().ToList())
+                    n.Remove();
+
+                // Clone incoming tail nodes
+                var tailClone = buildTailNodes.Select(CloneNode).ToList();
+
+                // Copy it in
+                if (preserveProdSessionState && activeSessionState != null)
+                {
+                    var swTail = tailClone.OfType<XElement>()
+                                          .FirstOrDefault(e => string.Equals(e.Name.LocalName, "system.web", StringComparison.OrdinalIgnoreCase));
+
+                    if (swTail != null)
+                    {
+                        var templSession = swTail.Elements()
+                            .FirstOrDefault(e => string.Equals(e.Name.LocalName, "sessionState", StringComparison.OrdinalIgnoreCase));
+                        var ssElement = new XElement(activeSessionState);
+
+                        if (templSession != null)
+                            templSession.ReplaceWith(ssElement);
+                        else
+                        {
+                            swTail.AddFirst(newline);
+                            swTail.AddFirst(ssElement);
+                        }
+                    }
+                    sessionStatePreserved = true;
+                }
+
+                if ((preserveConnectionString && activeConnectionStrings != null) && isDa)
+                {
+                    var elements = tailClone.OfType<XElement>().ToList();
+                    var existingCs = elements
+                        .FirstOrDefault(e => string.Equals(e.Name.LocalName, "connectionStrings", StringComparison.OrdinalIgnoreCase));
+
+                    if (existingCs != null)
+                    {
+                        int index = tailClone.IndexOf(existingCs);
+                        if (index >= 0)
+                        {
+                            tailClone[index] = new XElement(activeConnectionStrings);
+                        }
+                    }
+                    else
+                    {
+                        // Insert right before <system.web>
+                        var systemWeb = elements
+                            .FirstOrDefault(e => string.Equals(e.Name.LocalName, "system.web", StringComparison.OrdinalIgnoreCase));
+                        var csElement = new XElement(activeConnectionStrings);
+
+                        if (systemWeb != null)
+                        {
+                            systemWeb.AddBeforeSelf(newline);
+                            systemWeb.AddBeforeSelf(csElement);
+                        }
+                        else
+                        {
+                            // Fallback: append if system.web not found
+                            tailClone.Add(newline);
+                            tailClone.Add(csElement);
+                        }
+                    }
+                    connectionStringPreserved = true;   
+                }
+
+                if (tailClone.Count > 0)
+                    activeApp.AddAfterSelf(tailClone);
+
+                activeDoc.Save(activeWebConfigPath);
+
+
+                if (preserveProdSessionState && sessionStatePreserved)
+                    log?.Invoke($"{siteTag ?? ""}[Web]: Replaced web.config tail from build (sessionState preserved: {preserveProdSessionState}).");
+                else if (preserveConnectionString && connectionStringPreserved)
+                    log?.Invoke($"{siteTag}{role}[Web]: Replaced web.config tail from build (connectionString preserved: {preserveConnectionString}).");
+                else
+                    log?.Invoke($"{siteTag ?? ""}{role}[Web]: Replaced web.config tail from build.");
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"{siteTag ?? ""}[Web][ERROR]: Tail replace failed: {ex.Message}");
+            }
+        }
+
+        // --- local clone helper keeps whitespace/comments/elements intact ---
+        private static XNode CloneNode(XNode n)
+        {
+            if (n is XElement e) return new XElement(e);
+            if (n is XText t) return new XText(t.Value);
+            if (n is XCData c) return new XCData(c.Value);
+            if (n is XComment cmt) return new XComment(cmt.Value);
+            if (n is XProcessingInstruction p) return new XProcessingInstruction(p.Target, p.Data);
+            if (n is XDocumentType dt) return new XDocumentType(dt.Name, dt.PublicId, dt.SystemId, dt.InternalSubset);
+
+            // fallback for any other XNode subtype
+            return new XText(n.ToString(SaveOptions.DisableFormatting));
+        }
+
+        // Preserve existing <base href="..."> if present in ACTIVE app\index.html. Apply new value only if no existing href or if existing href matches expected pattern.
+        // Skip if expected patterns not found or on eSubpoena/DataAccess (per known config).
         public static void UpdateExternalIndexBaseHref(
             string rolePath,
             string siteTag,
@@ -1108,13 +1544,21 @@ namespace TheTool
             string roleDisplay,
             string? existingBaseHref = null)
         {
-            // rolePath: ...\CaseInfoSearch or ...\eSubpoena
             try
             {
+                bool isCis = rolePath.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase);
+
+                if (!isCis)
+                {
+                    return;
+                }
+
                 string indexPath = Path.Combine(rolePath, @"app\index.html");
+                
                 if (!File.Exists(indexPath))
                 {
-                    log?.Invoke($"{siteTag}{roleDisplay}[Skip]: app\\index.html not found.");
+                    
+                    log?.Invoke($"{siteTag}{roleDisplay}[Index.html][Skip]: app\\index.html not found.");
                     return;
                 }
 
@@ -1129,59 +1573,70 @@ namespace TheTool
 
                     if (!rxAnyBase.IsMatch(html))
                     {
-                        log?.Invoke($"{siteTag}{roleDisplay}[Skip]: <base href=\"...\"> not found in new app\\index.html (cannot reuse existing value).");
+                        log?.Invoke($"{siteTag}{roleDisplay}[Index.html][Skip]: <base href=\"...\"> not found in new app\\index.html (cannot reuse existing value).");
                         return;
                     }
 
                     html = rxAnyBase.Replace(html, $"$1{existingBaseHref}$2", 1);
+
+                    log?.Invoke($"{siteTag}{roleDisplay}[Index.html]: Modified value: {existingBaseHref}");
                 }
                 else
                 {
-                    // Fall back to the "old way": construct from siteTag + appName
+                    //construct from siteTag + appName
                     string appName = rolePath.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)
                         ? "CaseInfoSearch"
                         : "eSubpoena";
-
+  
                     var rx = new Regex($@"(<base\s+href=""/){appName}[^/""]*(/app/""\s*>)",
                                        RegexOptions.IgnoreCase);
 
                     if (!rx.IsMatch(html))
                     {
-                        log?.Invoke($"{siteTag}{roleDisplay}[Skip]: Expected '<base href=\"/{appName}*/app/\">' not found");
+                        log?.Invoke($"{siteTag}{roleDisplay}[Index.html][Skip]: Expected '<base href=\"/{appName}*/app/\">' not found");
                         return;
                     }
 
                     html = rx.Replace(html, $"$1{siteTag}{appName}$2", 1);
+                    log?.Invoke($"{siteTag}{roleDisplay}[Index.html]: **INDEX.HTML MISSING** - Costructed and Modified value: '<base href=\"/{siteTag}{appName}/app/\">'");
                 }
 
                 if (string.Equals(html, original, StringComparison.Ordinal))
                 {
-                    log?.Invoke($"{siteTag}{roleDisplay}[Warning]: app\\index.html unchanged.");
+                    log?.Invoke($"{siteTag}{roleDisplay}[Index.html][Warning]: app\\index.html unchanged.");
                     return;
                 }
 
                 File.WriteAllText(indexPath, html);
+                
             }
             catch (Exception ex)
             {
-                log?.Invoke($"{siteTag}{roleDisplay}[Error]: index.html update failed: {ex.Message}");
+                log?.Invoke($"{siteTag}{roleDisplay}[Index.html][Error]: index.html update failed: {ex.Message}");
             }
         }
 
-
         public static void UpdateExternalRewriteAction(
-    string rolePath,
-    string siteTag,
-    Action<string>? log,
-    string roleDisplay,
-    string? existingUrl = null)
+            string rolePath,
+            string siteTag,
+            Action<string>? log,
+            string roleDisplay,
+            string? existingUrl = null)
         {
             try
             {
-                string cfgPath = Path.Combine(rolePath, @"app\web.config");
+                bool isDa = rolePath.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase) ||
+                            rolePath.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase);
+
+                if (isDa)
+                {
+                    return;
+                }
+
+                string cfgPath = Path.Combine(rolePath, @"web.config");
                 if (!File.Exists(cfgPath))
                 {
-                    log?.Invoke($"{siteTag}{roleDisplay}[Skip]: app\\web.config not found.");
+                    log?.Invoke($"{siteTag}{roleDisplay}[Web][Skip]: web.config not found.");
                     return;
                 }
 
@@ -1191,9 +1646,10 @@ namespace TheTool
                                  .Where(e => string.Equals(e.Name.LocalName, "action", StringComparison.OrdinalIgnoreCase))
                                  .ToList();
 
+                
                 if (actions.Count == 0)
                 {
-                    log?.Invoke($"{siteTag}{roleDisplay}[Skip]: No <action> elements found in app\\web.config.");
+                    log?.Invoke($"{siteTag}{roleDisplay}[Web][Skip]: No <action> elements found in web.config.");
                     return;
                 }
 
@@ -1212,7 +1668,7 @@ namespace TheTool
                 if (target == null)
                 {
                     var expected = isCis ? "/CaseInfoSearch*/(maybe /app/)" : "/eSubpoena*/(maybe /app/)";
-                    log?.Invoke($"{siteTag}{roleDisplay}[Skip]: Expected <action ... url=\"{expected}\"> not found.");
+                    log?.Invoke($"{siteTag}{roleDisplay}[Web][Skip]: Expected <action ... url=\"{expected}\"> not found.");
                     return;
                 }
 
@@ -1234,19 +1690,19 @@ namespace TheTool
 
                 if (string.Equals(urlAttrFinal.Value, desiredUrl, StringComparison.Ordinal))
                 {
-                    log?.Invoke($"{siteTag}{roleDisplay}: app\\web.config unchanged.");
+                    log?.Invoke($"{siteTag}{roleDisplay}[Web]: app\\web.config unchanged.");
                     return;
                 }
 
                 urlAttrFinal.Value = desiredUrl;
                 doc.Save(cfgPath);
+                log?.Invoke($"{siteTag}{roleDisplay}[Web]: Modified <action type=\"Rewrite\" {urlAttrFinal} />");
             }
             catch (Exception ex)
             {
-                log?.Invoke($"{siteTag}{roleDisplay}[Error]: web.config update failed: {ex.Message}");
+                log?.Invoke($"{siteTag}{roleDisplay}[Web][Error]: web.config update failed: {ex.Message}");
             }
         }
-
 
         // =====================================================================
         //                              I/O UTILITIES
@@ -1477,17 +1933,18 @@ namespace TheTool
                                 .OrderByDescending(di => di.Name)
                                 .ToList();
 
-            bool first = true;
             foreach (var di in dirs)
             {
-                if (first) { first = false; continue; }
-                try
+                if (!string.Equals(di.Name, currentTag, StringComparison.OrdinalIgnoreCase))
                 {
-                    di.Delete(true);
-                }
-                catch (Exception ex)
-                {
-                    log?.Invoke($"[Backup] Failed to purge '{di.FullName}': {ex.Message}");
+                    try
+                    {
+                        di.Delete(true);
+                    }
+                    catch (Exception ex)
+                    {
+                        log?.Invoke($"[Backup] Failed to purge '{di.FullName}': {ex.Message}");
+                    }
                 }
             }
         }
@@ -1663,7 +2120,6 @@ namespace TheTool
             }
         }
 
-
         private static void TryDeleteFile(string path)
         {
             try
@@ -1700,7 +2156,7 @@ namespace TheTool
         private static readonly string[] ExternalPreserveRelative =
         {
             @"web.config",
-            @"app\environments\config.json"
+            //@"app\environments\config.json"
         };
 
         private static void CleanupBackupsKeepMostRecent(string basePath, string state, string client)
@@ -1727,10 +2183,11 @@ namespace TheTool
             CopyOverwriteSkipSelf(Path.Combine(prevPath, @"web.config"),
                                   Path.Combine(newPath, @"web.config"));
 
-            CopyOverwriteSkipSelf(Path.Combine(prevPath, @"app\environments\config.json"),
-                                  Path.Combine(newPath, @"app\environments\config.json"));
+            //CopyOverwriteSkipSelf(Path.Combine(prevPath, @"app\environments\config.json"),
+            //                      Path.Combine(newPath, @"app\environments\config.json"));
         }
 
+        
         private static void CopyOverwriteSkipSelf(string src, string dst)
         {
             if (PathsEqual(src, dst)) return;
