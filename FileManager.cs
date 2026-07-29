@@ -236,6 +236,12 @@ namespace TheTool
                     {
                         Report($"{siteTag}[Web]: Build tail not found — tail replacement skipped.");
                     }
+
+                    //Adds keys to config.json if missing
+                    EnsureProductionAngularConfigJson(
+                        roleRootPath: newPath,
+                        siteTag: siteTag,
+                        log: Report);
                 }
                 Report($"{siteTag}: Production Update Complete.");
             }
@@ -308,6 +314,13 @@ namespace TheTool
                     {
                         Report($"{siteTag}[Web]: Build tail not found — tail replacement skipped.");
                     }
+
+                    //Adds keys to config.json if missing
+                    EnsureProductionAngularConfigJson(
+                        roleRootPath: newPath,
+                        siteTag: siteTag,
+                        log: Report);
+
                 }
                 //Report($"{siteTag}: Production Update Complete.");
             }
@@ -1243,6 +1256,67 @@ namespace TheTool
             }
         }
 
+        //Modifications to Angular config.json for production deployment
+        static void EnsureProductionAngularConfigJson(
+            string roleRootPath,
+            string siteTag,
+            Action<string> log)
+        {
+            try
+            {
+                string cfgPath = Path.Combine(roleRootPath, @"app\environments\config.json");
+
+                if (!File.Exists(cfgPath))
+                {
+                    log($"{siteTag}[Config]: config.json not found; skipping.");
+                    return;
+                }
+
+                var root = JsonNode.Parse(File.ReadAllText(cfgPath)) as JsonObject;
+
+                if (root == null)
+                {
+                    log($"{siteTag}[Config]: Invalid JSON.");
+                    return;
+                }
+
+                const string frontendAppInsightsConnectionString =
+                    "InstrumentationKey=e4e86f4c-bc87-f50b-ab8e-bb1b295ecbe8;EndpointSuffix=applicationinsights.us;IngestionEndpoint=https://usgovtexas-0.in.applicationinsights.azure.us/;LiveEndpoint=https://usgovtexas.livediagnostics.monitor.azure.us/;AADAudience=https://monitor.azure.us/;ApplicationId=f07554e3-1336-499c-962e-0db2ee038066";
+
+                bool changed = false;
+
+                if (!root.ContainsKey("frontendAppInsightsConnectionString"))
+                {
+                    root["frontendAppInsightsConnectionString"] = frontendAppInsightsConnectionString;
+                    changed = true;
+                }
+
+                if (!root.ContainsKey("appInsightsSamplingPercentage"))
+                {
+                    root["appInsightsSamplingPercentage"] = 70;
+                    changed = true;
+                }
+
+                if (changed)
+                {
+                    File.WriteAllText(cfgPath, root.ToJsonString(new JsonSerializerOptions
+                    {
+                        WriteIndented = true
+                    }));
+
+                    log($"{siteTag}[Config]: Added missing Application Insights settings.");
+                }
+                else
+                {
+                    log($"{siteTag}[Config]: Application Insights settings already exist.");
+                }
+            }
+            catch (Exception ex)
+            {
+                log($"{siteTag}[Config]: Failed: {ex.Message}");
+            }
+        }
+
         private sealed class BuildWebConfigParts
         {
             public List<XNode>? TailNodes { get; set; }
@@ -1416,6 +1490,47 @@ namespace TheTool
 
                 var activeApp = activeRoot.Element("appSettings")
                                 ?? throw new InvalidOperationException("Active web.config missing <appSettings>.");
+
+                // Add Application Insights settings if missing
+                var requiredKeys = new Dictionary<string, string>
+                {
+                    ["BackendAppInsightsConnectionString"] = "InstrumentationKey=e4e86f4c-bc87-f50b-ab8e-bb1b295ecbe8;EndpointSuffix=applicationinsights.us;IngestionEndpoint=https://usgovtexas-0.in.applicationinsights.azure.us/;LiveEndpoint=https://usgovtexas.livediagnostics.monitor.azure.us/;AADAudience=https://monitor.azure.us/;ApplicationId=f07554e3-1336-499c-962e-0db2ee038066",
+                    ["AppInsightsSamplingPercentage"] = "70"
+                };
+
+                // Only modify appSettings if at least one key is missing.
+                bool missingKeys = requiredKeys.Keys.Any(key =>
+                    !activeApp.Elements("add")
+                        .Any(e => string.Equals(
+                            (string?)e.Attribute("key"),
+                            key,
+                            StringComparison.OrdinalIgnoreCase)));
+
+                if (missingKeys)
+                {
+                    activeApp.Add(new XText(Environment.NewLine + "    "));
+                    activeApp.Add(new XComment("Application Insights"));
+
+                    foreach (var kvp in requiredKeys)
+                    {
+                        if (!activeApp.Elements("add")
+                            .Any(e => string.Equals(
+                                (string?)e.Attribute("key"),
+                                kvp.Key,
+                                StringComparison.OrdinalIgnoreCase)))
+                        {
+                            activeApp.Add(
+                                new XText(Environment.NewLine + "    "),
+                                new XElement("add",
+                                    new XAttribute("key", kvp.Key),
+                                    new XAttribute("value", kvp.Value))
+                            );
+                        }
+                    }
+
+                    // Restore indentation before </appSettings>
+                    activeApp.Add(new XText(Environment.NewLine + "  "));
+                }
 
                 // Preserve session state
                 XElement? activeSessionState = null;
