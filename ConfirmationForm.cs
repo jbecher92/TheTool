@@ -426,6 +426,11 @@ namespace TheTool
 
         }
 
+        private void ConfirmationForm_Load(object sender, EventArgs e)
+        {
+
+        }
+
         public bool IsAbortRequested => _abortRequested;
     }
 }

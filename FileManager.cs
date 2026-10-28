@@ -243,7 +243,7 @@ namespace TheTool
                         siteTag: siteTag,
                         log: Report);
                 }
-                Report($"{siteTag}: Production Update Complete.");
+                //Report($"{siteTag}: Production Update Complete.");
             }
             // ===== Dated -> dated update =====
             else
@@ -402,7 +402,6 @@ namespace TheTool
                 string esRoot = Path.Combine(clientRoot, "eSubpoena");
                 string daRoot = Path.Combine(clientRoot, daFolder);
 
-                // Tell the user what is about to happen 
                 Report($"{siteTag}: Detected flat external layout. Migrating to '{clientRoot}'. Legacy folders suffixed with '_old_{backupTag}'.");
 
                 Directory.CreateDirectory(clientRoot);
@@ -427,7 +426,6 @@ namespace TheTool
                     try
                     {
                         Directory.Move(path, tagged);
-                        // Intentionally no per-folder log to keep output clean.
                     }
                     catch (Exception ex)
                     {
@@ -899,8 +897,8 @@ namespace TheTool
                     if (suffix == null || folder.Length <= suffix.Length)
                     {
                         log($"{siteTagLocal}{roleDisplay}[Config]: Unable to derive SiteTag from PBKDAL.DataAccess folder '{folder}'.");
-                        log($"{siteTagLocal}{roleDisplay} dalAdd - {dalAdd}");
-                        log($"{siteTagLocal}{roleDisplay} suffix - {suffix}");
+                        //log($"{siteTagLocal}{roleDisplay} dalAdd - {dalAdd}");
+                        //log($"{siteTagLocal}{roleDisplay} suffix - {suffix}");
                         return false;
                     }
 
@@ -1265,6 +1263,7 @@ namespace TheTool
             try
             {
                 string cfgPath = Path.Combine(roleRootPath, @"app\environments\config.json");
+                string keyName = string.Empty;  
 
                 if (!File.Exists(cfgPath))
                 {
@@ -1289,12 +1288,14 @@ namespace TheTool
                 {
                     root["frontendAppInsightsConnectionString"] = frontendAppInsightsConnectionString;
                     changed = true;
+                    keyName = "Application Insights";
                 }
 
                 if (!root.ContainsKey("appInsightsSamplingPercentage"))
                 {
                     root["appInsightsSamplingPercentage"] = 70;
                     changed = true;
+                    keyName = "Application Insights";
                 }
 
                 if (changed)
@@ -1304,12 +1305,9 @@ namespace TheTool
                         WriteIndented = true
                     }));
 
-                    log($"{siteTag}[Config]: Added missing Application Insights settings.");
+                    log($"{siteTag}[Config]: Added missing config.json setting - {keyName}.");
                 }
-                else
-                {
-                    log($"{siteTag}[Config]: Application Insights settings already exist.");
-                }
+                
             }
             catch (Exception ex)
             {
@@ -1454,6 +1452,54 @@ namespace TheTool
             return false;
         }
 
+        private static bool AddMissingKey(
+            XElement appSettings,
+            string key,
+            string value)
+        {
+            if (appSettings.Elements("add")
+                .Any(e => string.Equals(
+                    (string?)e.Attribute("key"),
+                    key,
+                    StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            var lastAdd = appSettings.Elements("add").LastOrDefault();
+
+            if (lastAdd != null)
+            {
+                var whiteSpace = lastAdd.PreviousNode as XText;
+                var indentation = "";
+
+                if (whiteSpace != null)
+                {
+                    int newlineIndex = whiteSpace.Value.LastIndexOf('\n');
+
+                    if (newlineIndex >= 0)
+                        indentation = whiteSpace.Value[(newlineIndex + 1)..];
+                }
+
+                lastAdd.AddAfterSelf(
+                    new XText(Environment.NewLine + indentation),
+                    new XElement("add",
+                        new XAttribute("key", key),
+                        new XAttribute("value", value))
+                );
+            }
+            else
+            {
+                appSettings.Add(
+                    new XElement("add",
+                        new XAttribute("key", key),
+                        new XAttribute("value", value))
+                );
+            }
+
+            return true;
+        }
+
         private static void ReplaceWebConfigValues(
             string activeWebConfigPath,
             IEnumerable<XNode> buildTailNodes,
@@ -1468,6 +1514,9 @@ namespace TheTool
                 string role = activeWebConfigPath.Split('\\')[^2];
                 bool isDa = role.EndsWith("DataAccess", StringComparison.OrdinalIgnoreCase) 
                          || role.EndsWith("PBKDataAccess", StringComparison.OrdinalIgnoreCase);
+                bool isEsub = role.EndsWith("eSubpoena", StringComparison.OrdinalIgnoreCase);
+                bool isCis = role.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase);
+                bool isProd = !isDa && !isEsub && !isCis;
                 var newline = new XText(Environment.NewLine + "  ");
                 bool connectionStringPreserved = false;
                 bool sessionStatePreserved = false;
@@ -1484,52 +1533,68 @@ namespace TheTool
                 // Replace configSections in Data Access for QuickNav tags
                 if (buildConfigSections != null && isDa)
                 {
-                    activeRoot.Element("configSections")?.Remove();
-                    activeRoot.AddFirst(new XElement(buildConfigSections));
+                    var activeConfigSections = activeRoot.Element("configSections");
+
+                    if (activeConfigSections != null)
+                    {
+                        activeConfigSections.RemoveAttributes();
+                        activeConfigSections.Add(
+                            buildConfigSections.Attributes().Select(a => new XAttribute(a))
+                        );
+
+                        activeConfigSections.RemoveNodes();
+                        activeConfigSections.Add(
+                            buildConfigSections.Nodes().Select(CloneNode)
+                        );
+                    }
+                    else
+                    {
+                        activeRoot.AddFirst(new XElement(buildConfigSections));
+                    }
                 }
 
                 var activeApp = activeRoot.Element("appSettings")
                                 ?? throw new InvalidOperationException("Active web.config missing <appSettings>.");
-
-                // Add Application Insights settings if missing
-                var requiredKeys = new Dictionary<string, string>
+                
+                // Define required web.config keys
+                var requiredKeys = new Dictionary<string, string>();
+                var keyName = string.Empty;
+                if (isProd)
                 {
-                    ["BackendAppInsightsConnectionString"] = "InstrumentationKey=e4e86f4c-bc87-f50b-ab8e-bb1b295ecbe8;EndpointSuffix=applicationinsights.us;IngestionEndpoint=https://usgovtexas-0.in.applicationinsights.azure.us/;LiveEndpoint=https://usgovtexas.livediagnostics.monitor.azure.us/;AADAudience=https://monitor.azure.us/;ApplicationId=f07554e3-1336-499c-962e-0db2ee038066",
-                    ["AppInsightsSamplingPercentage"] = "70"
-                };
-
-                // Only modify appSettings if at least one key is missing.
-                bool missingKeys = requiredKeys.Keys.Any(key =>
-                    !activeApp.Elements("add")
-                        .Any(e => string.Equals(
-                            (string?)e.Attribute("key"),
-                            key,
-                            StringComparison.OrdinalIgnoreCase)));
-
-                if (missingKeys)
-                {
-                    activeApp.Add(new XText(Environment.NewLine + "    "));
-                    activeApp.Add(new XComment("Application Insights"));
-
-                    foreach (var kvp in requiredKeys)
+                    requiredKeys = new Dictionary<string, string>
                     {
-                        if (!activeApp.Elements("add")
-                            .Any(e => string.Equals(
-                                (string?)e.Attribute("key"),
-                                kvp.Key,
-                                StringComparison.OrdinalIgnoreCase)))
-                        {
-                            activeApp.Add(
-                                new XText(Environment.NewLine + "    "),
-                                new XElement("add",
-                                    new XAttribute("key", kvp.Key),
-                                    new XAttribute("value", kvp.Value))
-                            );
-                        }
-                    }
+                        ["BackendAppInsightsConnectionString"] = "InstrumentationKey=e4e86f4c-bc87-f50b-ab8e-bb1b295ecbe8;EndpointSuffix=applicationinsights.us;IngestionEndpoint=https://usgovtexas-0.in.applicationinsights.azure.us/;LiveEndpoint=https://usgovtexas.livediagnostics.monitor.azure.us/;AADAudience=https://monitor.azure.us/;ApplicationId=f07554e3-1336-499c-962e-0db2ee038066",
+                        ["AppInsightsSamplingPercentage"] = "70"
+                    };
+                    if (requiredKeys.ContainsKey("BackendAppInsightsConnectionString"))
+                        keyName = "Application Insights";
+                }
+                else if (isCis)
+                {
+                    requiredKeys = new Dictionary<string, string>
+                    {
+                        ["AngularLoginPage"] = "login"
+                    };
+                    if (requiredKeys.ContainsKey("AngularLoginPage"))
+                        keyName = "AngularLoginPage";
+                }
 
-                    // Restore indentation before </appSettings>
-                    activeApp.Add(new XText(Environment.NewLine + "  "));
+                // Add missing keys to the active web.config if they are not present.
+                bool appSettingsChanged = false;
+                foreach (var kvp in requiredKeys)
+                {
+                    if (AddMissingKey(activeApp, kvp.Key, kvp.Value))
+                    {
+                        appSettingsChanged = true;
+                    }
+                }
+
+                if (appSettingsChanged)
+                {
+                    if (isProd)
+                        log?.Invoke($"{siteTag ?? ""}[Web]: Added missing web.config setting - {keyName}.");
+                    else
+                        log?.Invoke($"{siteTag ?? ""}{role}[Web]: Added missing web.config setting - {keyName}.");
                 }
 
                 // Preserve session state
@@ -1542,7 +1607,7 @@ namespace TheTool
                         activeSessionState = new XElement(ss);
                 }
 
-                // Preserve connectionString in data access configs
+                // Preserve connectionString in data access 
                 XElement? activeConnectionStrings = null;
                 if (preserveConnectionString)
                 {
@@ -1551,14 +1616,11 @@ namespace TheTool
                         activeConnectionStrings = new XElement(cs);
                 }
 
-                // Remove active tail nodes (everything after </appSettings>)
+                // Replace everything after <appSettings> while preserving sessionState and connectionStrings if required
                 foreach (var n in activeApp.NodesAfterSelf().ToList())
                     n.Remove();
-
-                // Clone incoming tail nodes
                 var tailClone = buildTailNodes.Select(CloneNode).ToList();
-
-                // Copy it in
+                
                 if (preserveProdSessionState && activeSessionState != null)
                 {
                     var swTail = tailClone.OfType<XElement>()
@@ -1609,8 +1671,7 @@ namespace TheTool
                         }
                         else
                         {
-                            // Fallback: append if system.web not found
-                            tailClone.Add(newline);
+                            // Append if system.web not found
                             tailClone.Add(csElement);
                         }
                     }
@@ -1636,7 +1697,7 @@ namespace TheTool
             }
         }
 
-        // --- local clone helper keeps whitespace/comments/elements intact ---
+        // Clone helper that keeps whitespace/comments/elements intact
         private static XNode CloneNode(XNode n)
         {
             if (n is XElement e) return new XElement(e);
@@ -1650,8 +1711,8 @@ namespace TheTool
             return new XText(n.ToString(SaveOptions.DisableFormatting));
         }
 
-        // Preserve existing <base href="..."> if present in ACTIVE app\index.html. Apply new value only if no existing href or if existing href matches expected pattern.
-        // Skip if expected patterns not found or on eSubpoena/DataAccess (per known config).
+        // Preserve existing base href if present in app\index.html. Apply new value only if no existing href or if existing href matches expected pattern.
+        // Skip if expected patterns not found or on eSubpoena/DataAccess 
         public static void UpdateExternalIndexBaseHref(
             string rolePath,
             string siteTag,
@@ -1698,7 +1759,7 @@ namespace TheTool
                 }
                 else
                 {
-                    //construct from siteTag + appName
+                    // Construct from siteTag + appName
                     string appName = rolePath.EndsWith("CaseInfoSearch", StringComparison.OrdinalIgnoreCase)
                         ? "CaseInfoSearch"
                         : "eSubpoena";
@@ -1799,7 +1860,7 @@ namespace TheTool
                 }
                 else
                 {
-                    // Fall back to the "old way": construct from siteTag + appName
+                    // Construct from siteTag + appName
                     desiredUrl = $"/{siteTag}{appName}/app/";
                 }
 

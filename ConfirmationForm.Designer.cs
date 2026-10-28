@@ -42,6 +42,7 @@ namespace TheTool
             label1 = new Label();
             tailProd = new CheckBox();
             tailExt = new CheckBox();
+            label2 = new Label();
             ((System.ComponentModel.ISupportInitialize)dgvSummary).BeginInit();
             SuspendLayout();
             // 
@@ -149,6 +150,7 @@ namespace TheTool
             tailProd.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
             tailProd.AutoSize = true;
             tailProd.Checked = true;
+            tailProd.CheckState = CheckState.Checked;
             tailProd.Location = new Point(11, 589);
             tailProd.Name = "tailProd";
             tailProd.Size = new Size(292, 24);
@@ -169,6 +171,15 @@ namespace TheTool
             tailExt.Text = "NEW External changes";
             tailExt.UseVisualStyleBackColor = true;
             // 
+            // label2
+            // 
+            label2.AutoSize = true;
+            label2.Location = new Point(518, 591);
+            label2.Name = "label2";
+            label2.Size = new Size(458, 20);
+            label2.TabIndex = 10;
+            label2.Text = "Keep the boxes checked or else Jesse will Kool-Aid Man your house ";
+            // 
             // ConfirmationForm
             // 
             AcceptButton = btnConfirm;
@@ -176,6 +187,7 @@ namespace TheTool
             AutoScaleMode = AutoScaleMode.Font;
             CancelButton = btnCancel;
             ClientSize = new Size(1290, 627);
+            Controls.Add(label2);
             Controls.Add(tailExt);
             Controls.Add(tailProd);
             Controls.Add(label1);
@@ -187,6 +199,7 @@ namespace TheTool
             MinimumSize = new Size(600, 398);
             Name = "ConfirmationForm";
             Text = "Confirm Selected Sites";
+            Load += ConfirmationForm_Load;
             ((System.ComponentModel.ISupportInitialize)dgvSummary).EndInit();
             ResumeLayout(false);
             PerformLayout();
@@ -196,5 +209,6 @@ namespace TheTool
         private DataGridViewCheckBoxColumn colProd;
         private DataGridViewCheckBoxColumn colEAP;
         private DataGridViewCheckBoxColumn colESub;
+        private Label label2;
     }
 }
